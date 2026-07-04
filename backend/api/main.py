@@ -253,6 +253,13 @@ async def submit_decision(run_id: str, request: DecisionRequest):
     # Update the last pending decision log entry
     pending_card = state.pending_approval
     agent_justification = None
+    
+    if action == UserAction.APPROVE:
+        if pending_card and pending_card.stage == "objective_intake" and getattr(state.objective, "is_ambiguous", False):
+            raise HTTPException(
+                status_code=400, 
+                detail="Cannot approve an ambiguous objective. Please click 'Suggest Alt.' and provide the exact name of the target column."
+            )
 
     if action == UserAction.COUNTER_PROPOSE and request.note:
         if pending_card and pending_card.stage == "objective_intake":
