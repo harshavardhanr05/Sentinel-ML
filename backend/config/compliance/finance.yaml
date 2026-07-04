@@ -1,0 +1,54 @@
+# Finance domain compliance configuration
+# Applies to: credit scoring, loan default prediction, insurance, banking
+# Regulatory coverage: ECOA, EEOC, GDPR (if EU context)
+
+domain: finance
+
+regulations:
+  - ECOA_disparate_impact_0.80_rule
+  - EEOC_adverse_impact_4_5ths_rule
+  - GDPR_right_to_explanation
+  - FCRA_data_accuracy
+
+# Fairness thresholds (stricter than generic due to ECOA/EEOC requirements)
+fairness_thresholds:
+  # Disparate Impact: P(positive | unprivileged) / P(positive | privileged)
+  # ECOA and EEOC "four-fifths rule" require >= 0.80
+  disparate_impact_min: 0.80
+
+  # Equal Opportunity Difference: |TPR_unprivileged - TPR_privileged|
+  equal_opportunity_diff_max: 0.10
+
+  # Robustness: max acceptable AUC degradation under synthetic covariate shift (%)
+  auc_degradation_max_pct: 8.0
+
+  # Stability: max acceptable bootstrap variance in validation metric
+  bootstrap_variance_max: 0.025
+
+  # Demographic parity difference (additional check)
+  demographic_parity_diff_max: 0.15
+
+# Explainability required for adverse action notices (FCRA)
+requires_explainability: true
+explainability_scope: global_and_local
+
+# Protected attributes that MUST be evaluated if present in the dataset
+required_protected_attribute_checks:
+  - gender
+  - race
+  - age_bucket
+  - national_origin
+  - marital_status
+
+# Features that are typically high-risk proxy variables for finance domain
+high_risk_proxy_features:
+  - zip_code
+  - postal_code
+  - neighborhood
+  - school_district
+
+notes: |
+  Finance domain compliance requires strict fairness evaluation under ECOA
+  (Equal Credit Opportunity Act) and EEOC guidelines. The 4/5ths rule for
+  Disparate Impact means any score below 0.80 is a regulatory red flag.
+  Adverse action notices require local-level SHAP explanations per FCRA.

@@ -1,0 +1,48 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Environment
+.env
+*.env.local
+
+# Databases
+*.db
+*.sqlite
+mlflow.db
+mlruns/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/build/
+.npm/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Artifacts
+*.pkl
+*.joblib
+model_artifacts/

@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./artifacts:/app/artifacts
+      - ./pipeline_runs.db:/app/pipeline_runs.db
+    env_file:
+      - .env
+    environment:
+      - UPLOAD_DIR=/app/data/uploads
+      - REPORTS_OUTPUT_DIR=/app/artifacts/reports
+      - EXPLAINABILITY_OUTPUT_DIR=/app/artifacts/explainability
+      - COMPLIANCE_CONFIG_DIR=/app/backend/config/compliance/
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - VITE_WS_URL=ws://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  uploads:
+  artifacts:

@@ -1,0 +1,57 @@
+# Healthcare domain compliance configuration (STUB — Phase 6 to flesh out fully)
+# Applies to: patient outcomes, clinical decision support, diagnostic AI
+# Regulatory coverage: HIPAA, Indian DPDP Act (health data), EU AI Act (medical device)
+
+domain: healthcare
+
+regulations:
+  - HIPAA_minimum_necessary
+  - HIPAA_de_identification_safe_harbor
+  - DPDP_sensitive_personal_data
+  - EU_AI_Act_medical_device_class_IIa
+
+# Fairness thresholds — stricter for clinical settings due to patient safety
+fairness_thresholds:
+  disparate_impact_min: 0.85          # Stricter than generic — clinical equity
+  equal_opportunity_diff_max: 0.08    # Tighter TPR gap for diagnostic fairness
+  auc_degradation_max_pct: 5.0        # Very low tolerance for distribution shift
+  bootstrap_variance_max: 0.020       # Stricter stability requirement
+  demographic_parity_diff_max: 0.15
+
+requires_explainability: true
+explainability_scope: global_and_local
+
+required_protected_attribute_checks:
+  - gender
+  - age_bucket
+  - race_ethnicity
+  - socioeconomic_status
+
+# HIPAA Safe Harbor de-identification: these columns MUST be flagged for removal/generalization
+hipaa_safe_harbor_columns:
+  - name
+  - dob
+  - date_of_birth
+  - ssn
+  - phone
+  - email
+  - address
+  - zip_code
+  - geographic_data
+  - dates          # any dates except year
+  - age            # if > 89, must be generalized to "90+"
+  - device_id
+  - ip_address
+
+high_risk_proxy_features:
+  - zip_code
+  - postal_code
+  - insurance_type  # may proxy for socioeconomic status
+
+notes: |
+  STUB: Healthcare compliance is partially implemented. HIPAA de-identification
+  checks are listed but not yet fully enforced in the governance audit.
+  TODO Phase 6: implement Safe Harbor column removal, DPDP sensitive data
+  classification, and EU AI Act conformity assessment checklist.
+  Current implementation uses the fairness thresholds above and flags HIPAA
+  columns during data profiling (PII detection).

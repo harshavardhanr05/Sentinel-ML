@@ -1,0 +1,213 @@
+/**
+ * frontend/src/api/client.ts
+ * Axios API client + WebSocket hook for Sentinel-ML backend.
+ */
+
+import axios from 'axios'
+import { useEffect, useRef, useCallback } from 'react'
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
+
+export const api = axios.create({
+  baseURL: API_BASE,
+  headers: { 'Content-Type': 'application/json' },
+})
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+export interface DecisionCard {
+  stage: string
+  proposed_action: string
+  reasoning: string
+  alternatives_considered: string[]
+  cost_estimate?: string
+  metrics_summary: Record<string, unknown>
+  requires_response: boolean
+}
+
+export interface DecisionLogEntry {
+  entry_id: string
+  stage: string
+  proposed_action: string
+  reasoning: string
+  alternatives_considered: string[]
+  user_action: string
+  user_note?: string
+  agent_justification?: string
+  timestamp: string
+  decided_at?: string
+}
+
+export interface FairnessMetrics {
+  disparate_impact?: number
+  equal_opportunity_difference?: number
+  per_group_confusion_matrices: Record<string, unknown>
+  protected_attribute?: string
+  threshold_used?: number
+  status: string
+}
+
+export interface GovernanceAudit {
+  fairness: FairnessMetrics
+  robustness: { auc_degradation_pct?: number; status: string }
+  stability: { metric_variance?: number; metric_std?: number; status: string }
+  compliance_checklist: string[]
+  compliance_thresholds: Record<string, number>
+  overall_status: string
+  failure_reasons: string[]
+  loopback_target?: string
+  iteration_count: number
+}
+
+export interface ModelLeaderboardEntry {
+  model_name: string
+  model_family: string
+  auc_roc?: number
+  f1_score?: number
+  precision?: number
+  recall?: number
+  accuracy?: number
+  cost_estimate_note?: string
+  is_selected: boolean
+  calibration_curve: Array<{ bin_mean_predicted: number; fraction_of_positives: number }>
+}
+
+export interface StageStatuses {
+  objective_intake: string
+  compliance: string
+  data_profiling: string
+  feature_engineering: string
+  model_selection: string
+  governance: string
+  explainability: string
+  reporting: string
+}
+
+export interface PipelineState {
+  run_id: string
+  created_at: string
+  updated_at: string
+  current_stage: string
+  stage_statuses: StageStatuses
+  is_paused: boolean
+  pending_approval?: DecisionCard
+  error_message?: string
+  objective: {
+    raw_text: string
+    task_type: string
+    target_column?: string
+    protected_attributes: string[]
+    domain_tag: string
+    is_ambiguous: boolean
+    clarification_needed: string[]
+  }
+  data_health_report?: {
+    row_count: number
+    column_count: number
+    missingness_flags: Record<string, number>
+    leakage_flags: Array<{ column: string; reason: string; severity: string }>
+    imbalance_ratio?: number
+    imbalance_flag: boolean
+    severity_summary: Record<string, string>
+    profiling_notes: string[]
+  }
+  feature_log: {
+    accepted: Array<{ feature: string; transformation?: string; reason: string; metric_delta?: number; governance_flagged: boolean }>
+    rejected: Array<{ feature: string; reason: string; governance_flagged: boolean }>
+    final_feature_set: string[]
+  }
+  model_leaderboard: ModelLeaderboardEntry[]
+  selected_model_name?: string
+  governance_audit: GovernanceAudit
+  explainability: {
+    global_shap_values: Record<string, number>
+    top_features_summary: string[]
+    local_examples: Array<unknown>
+    shap_plot_path?: string
+  }
+  decisions_log: DecisionLogEntry[]
+  final_recommendation: string
+  final_recommendation_reasoning?: string
+  model_card_path?: string
+  audit_trail_path?: string
+}
+
+// ── API functions ─────────────────────────────────────────────────────────────
+
+export async function createRun(objective: string, file: File): Promise<{ run_id: string }> {
+  const form = new FormData()
+  form.append('objective', objective)
+  form.append('file', file)
+  const res = await api.post('/runs', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return res.data
+}
+
+export async function listRuns(): Promise<Array<{ run_id: string; current_stage: string; is_paused: boolean; created_at: string }>> {
+  const res = await api.get('/runs')
+  return res.data
+}
+
+export async function getRunState(runId: string): Promise<PipelineState> {
+  const res = await api.get(`/runs/${runId}/state`)
+  return res.data
+}
+
+export async function submitDecision(
+  runId: string,
+  action: 'approve' | 'reject' | 'counter_propose',
+  note?: string
+): Promise<{ agent_justification?: string }> {
+  const res = await api.post(`/runs/${runId}/decision`, { action, note })
+  return res.data
+}
+
+export async function updateObjective(runId: string, updates: {
+  target_column?: string
+  protected_attributes?: string[]
+  domain_tag?: string
+  task_type?: string
+}): Promise<void> {
+  await api.post(`/runs/${runId}/objective`, updates)
+}
+
+export async function deleteRun(runId: string): Promise<void> {
+  await api.delete(`/runs/${runId}`)
+}
+
+// ── WebSocket hook ─────────────────────────────────────────────────────────────
+
+export function useRunWebSocket(
+  runId: string | null,
+  onMessage: (state: PipelineState) => void
+) {
+  const wsRef = useRef<WebSocket | null>(null)
+
+  const connect = useCallback(() => {
+    if (!runId) return
+    const ws = new WebSocket(`${WS_BASE}/ws/${runId}`)
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as PipelineState
+        onMessage(data)
+      } catch {}
+    }
+
+    ws.onclose = () => {
+      // Reconnect after 2s if unexpectedly closed
+      setTimeout(connect, 2000)
+    }
+
+    wsRef.current = ws
+  }, [runId, onMessage])
+
+  useEffect(() => {
+    connect()
+    return () => {
+      wsRef.current?.close()
+    }
+  }, [connect])
+}

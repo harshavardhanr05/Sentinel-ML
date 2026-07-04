@@ -1,0 +1,44 @@
+# Core agent orchestration
+langgraph>=0.2.0
+langchain-google-genai>=2.0.0
+langchain-core>=0.3.0
+google-generativeai>=0.5.0
+
+# ML / Data
+scikit-learn>=1.4.0
+xgboost>=2.0.0
+lightgbm>=4.3.0
+optuna>=3.6.0
+shap>=0.45.0
+fairlearn>=0.10.0
+pandas>=2.2.0
+numpy>=1.26.0
+imbalanced-learn>=0.12.0
+
+# API / Backend
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+websockets>=12.0
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+
+# Database / Persistence
+sqlalchemy>=2.0.0
+aiosqlite>=0.20.0
+
+# Experiment tracking
+mlflow>=2.13.0
+
+# Config
+pyyaml>=6.0.1
+python-dotenv>=1.0.1
+
+# Reporting
+jinja2>=3.1.4
+weasyprint>=62.0; sys_platform != "win32"
+
+# Testing
+pytest>=8.2.0
+pytest-asyncio>=0.23.0
+httpx>=0.27.0

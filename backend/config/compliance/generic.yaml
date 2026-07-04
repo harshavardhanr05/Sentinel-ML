@@ -1,0 +1,37 @@
+# Generic / EU domain compliance configuration
+# Applies to: any domain without a specific domain YAML, or EU-context deployments
+# Regulatory coverage: GDPR, EU AI Act (high-risk AI systems)
+
+domain: generic
+
+regulations:
+  - GDPR_right_to_explanation
+  - GDPR_data_minimization
+  - EU_AI_Act_high_risk_transparency
+
+# Fairness thresholds (moderate defaults — appropriate for general use)
+fairness_thresholds:
+  disparate_impact_min: 0.80
+  equal_opportunity_diff_max: 0.10
+  auc_degradation_max_pct: 10.0
+  bootstrap_variance_max: 0.030
+  demographic_parity_diff_max: 0.20
+
+requires_explainability: true
+explainability_scope: global
+
+required_protected_attribute_checks:
+  - gender
+  - age_bucket
+  - nationality
+
+high_risk_proxy_features:
+  - zip_code
+  - postal_code
+
+notes: |
+  Generic compliance applies when no domain-specific YAML is matched.
+  GDPR's right to explanation requires that automated decisions affecting
+  individuals must be explainable on request (Article 22). The EU AI Act
+  classifies high-risk AI systems (e.g., employment, credit) as requiring
+  human oversight and transparency reporting.
