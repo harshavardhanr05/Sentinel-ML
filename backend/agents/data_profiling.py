@@ -110,6 +110,48 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
         "shape": [len(df), len(df.columns)],
     }
 
+    # ── Feature Correlations & Distributions (for Data Analysis Dashboard) ──
+    analysis_metrics = {
+        "numeric_correlations": {},
+        "categorical_distributions": {},
+        "target_distribution": {}
+    }
+    
+    try:
+        if target_col and target_col in df.columns:
+            # Target Distribution
+            analysis_metrics["target_distribution"] = df[target_col].value_counts(normalize=True).to_dict()
+            
+            # Numeric correlations with target (if target is binary/numeric)
+            # Convert target to numeric temporarily if it's binary string
+            y_temp = df[target_col]
+            if y_temp.dtype == object or str(y_temp.dtype) == "category":
+                if y_temp.nunique() == 2:
+                    y_temp = pd.factorize(y_temp)[0]
+                else:
+                    y_temp = None
+                    
+            if y_temp is not None:
+                numeric_cols = df.select_dtypes(include=[np.number]).columns
+                for c in numeric_cols:
+                    if c != target_col:
+                        corr = df[c].corr(pd.Series(y_temp, index=df.index))
+                        if not pd.isna(corr):
+                            analysis_metrics["numeric_correlations"][c] = round(float(corr), 3)
+
+        # Categorical distributions
+        cat_cols = df.select_dtypes(include=["object", "category"]).columns
+        for c in cat_cols:
+            if c != target_col:
+                val_counts = df[c].value_counts(normalize=True).head(5).to_dict()
+                analysis_metrics["categorical_distributions"][c] = val_counts
+                
+    except Exception as e:
+        # Failsafe so pipeline doesn't crash if stats fail
+        analysis_metrics["error"] = str(e)
+        
+    state.data_analysis_metrics = analysis_metrics
+
     return state
 
 

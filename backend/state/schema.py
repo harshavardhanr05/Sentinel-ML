@@ -96,6 +96,7 @@ class ObjectiveState(BaseModel):
         default_factory=list,
         description="List of fields the user needs to clarify",
     )
+    feature_selection_top_k: Optional[int] = None
 
 
 class ColumnProfile(BaseModel):
@@ -341,6 +342,7 @@ class PipelineState(BaseModel):
     # Agent outputs
     data_schema: Dict[str, Any] = Field(default_factory=dict)
     data_health_report: Optional[DataHealthReport] = None
+    data_analysis_metrics: Dict[str, Any] = Field(default_factory=dict)
     feature_log: FeatureLog = Field(default_factory=FeatureLog)
     model_leaderboard: List[ModelLeaderboardEntry] = Field(default_factory=list)
     selected_model_name: Optional[str] = None

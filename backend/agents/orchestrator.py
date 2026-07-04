@@ -44,10 +44,11 @@ Produce a JSON object with EXACTLY these fields (no extras):
   "target_column": "the most likely target column name, or null if uncertain",
   "target_column_candidates": ["list", "of", "candidate", "columns"],
   "optimization_priority": "plain-language priority from the objective, e.g. 'minimize false negatives', or null",
-  "protected_attributes": ["list", "of", "column names that are fairness-sensitive, based on user mention or inference"],
-  "domain_tag": "one of: finance, healthcare, retail, hr, generic",
-  "is_ambiguous": true/false,
-  "clarification_needed": ["list of fields that are unclear and need user input, or empty list"]
+  "protected_attributes": ["list of exact column names that are sensitive (e.g. sex, race, age)"],
+  "domain_tag": "finance, healthcare, hr, generic, etc.",
+  "feature_selection_top_k": integer or null (if the user specifically asks to only use the top N features),
+  "is_ambiguous": true/false (true ONLY if the objective is completely unclear or target column is unidentifiable),
+  "clarification_needed": ["list of questions or missing info to ask the user, if ambiguous"]
 }}
 
 Rules:
@@ -206,4 +207,5 @@ def _build_objective_state(
         domain_tag=parsed.get("domain_tag", "generic"),
         is_ambiguous=bool(is_ambiguous),
         clarification_needed=clarification_needed,
+        feature_selection_top_k=parsed.get("feature_selection_top_k"),
     )

@@ -216,6 +216,24 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
             governance_flagged=True,
         ))
 
+    # ── Step 7: Enforce top-K feature selection (if requested) ────────
+    top_k = state.objective.feature_selection_top_k
+    if top_k is not None and top_k > 0 and len(accepted) > top_k:
+        # Sort accepted features by metric_delta descending (None/NaN treated as 0)
+        def get_delta(e: FeatureLogEntry) -> float:
+            return e.metric_delta if e.metric_delta is not None else 0.0
+            
+        accepted.sort(key=get_delta, reverse=True)
+        
+        # Move excess features to rejected
+        excess_features = accepted[top_k:]
+        accepted = accepted[:top_k]
+        
+        for e in excess_features:
+            e.status = "rejected"
+            e.reason += f" (Rejected due to user-specified top-{top_k} constraint)"
+            rejected.append(e)
+
     final_features = [e.feature for e in accepted if e.feature in df.columns]
 
     state.feature_log = FeatureLog(

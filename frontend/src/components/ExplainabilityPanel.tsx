@@ -19,12 +19,14 @@ interface Props {
   globalShap: Record<string, number>
   topFeatures: string[]
   localExamples: LocalExample[]
+  finalFeatures?: string[]
 }
 
-export default function ExplainabilityPanel({ globalShap, topFeatures, localExamples }: Props) {
+export default function ExplainabilityPanel({ globalShap, topFeatures, localExamples, finalFeatures = [] }: Props) {
   const [expandedExample, setExpandedExample] = useState<number | null>(null)
 
   const chartData = Object.entries(globalShap)
+    .filter(([feat]) => finalFeatures.length === 0 || finalFeatures.includes(feat))
     .sort(([, a], [, b]) => b - a)
     .slice(0, 12)
     .map(([feature, val]) => ({ feature, importance: val }))

@@ -18,6 +18,7 @@ interface Props {
   governance: GovernanceAudit
   featureImportance: Record<string, number>
   costEstimates: Record<string, any>
+  finalFeatures?: string[]
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -58,7 +59,7 @@ function MetricCard({ label, value, threshold, status, description }: {
   )
 }
 
-export default function InsightDashboard({ leaderboard, governance, featureImportance, costEstimates }: Props) {
+export default function InsightDashboard({ leaderboard, governance, featureImportance, costEstimates, finalFeatures = [] }: Props) {
   // Model leaderboard chart data
   const leaderboardData = leaderboard.map(m => ({
     name: m.model_name.replace(' (Optuna)', ' ✨').replace('Logistic Regression', 'LR'),
@@ -69,6 +70,7 @@ export default function InsightDashboard({ leaderboard, governance, featureImpor
 
   // Feature importance data
   const featImportanceData = Object.entries(featureImportance)
+    .filter(([feat]) => finalFeatures.length === 0 || finalFeatures.includes(feat))
     .sort(([, a], [, b]) => b - a)
     .slice(0, 10)
     .map(([feat, val]) => ({ feature: feat, importance: val }))

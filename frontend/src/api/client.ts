@@ -101,7 +101,9 @@ export interface PipelineState {
     domain_tag: string
     is_ambiguous: boolean
     clarification_needed: string[]
+    feature_selection_top_k?: number
   }
+  data_analysis_metrics?: any
   data_health_report?: {
     row_count: number
     column_count: number

@@ -10,7 +10,7 @@
 import React, { useState, useCallback } from 'react'
 import {
   Shield, Upload, Play, ChevronRight, Database,
-  BarChart2, Clock, Lightbulb, MessageSquare, Zap, AlertCircle
+  BarChart2, Clock, Lightbulb, MessageSquare, Zap, AlertCircle, TrendingUp
 } from 'lucide-react'
 import {
   createRun, getRunState, listRuns, useRunWebSocket,
@@ -20,16 +20,18 @@ import PipelineDAG from './components/PipelineDAG'
 import DecisionCard from './components/DecisionCard'
 import ChatPanel from './components/ChatPanel'
 import InsightDashboard from './components/InsightDashboard'
+import DataAnalysisDashboard from './components/DataAnalysisDashboard'
 import AuditTrailViewer from './components/AuditTrailViewer'
 import ExplainabilityPanel from './components/ExplainabilityPanel'
 
-type Tab = 'dag' | 'decisions' | 'chat' | 'dashboard' | 'explainability' | 'audit'
+type Tab = 'dag' | 'decisions' | 'data-analysis' | 'dashboard' | 'explainability' | 'chat' | 'audit'
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: 'dag', label: 'Pipeline', icon: <Play size={14} /> },
   { id: 'decisions', label: 'Decisions', icon: <Zap size={14} /> },
+  { id: 'data-analysis', label: 'Data Analysis', icon: <TrendingUp size={14} /> },
   { id: 'chat', label: 'Reasoning', icon: <MessageSquare size={14} /> },
-  { id: 'dashboard', label: 'Insights', icon: <BarChart2 size={14} /> },
+  { id: 'dashboard', label: 'Leaderboard', icon: <BarChart2 size={14} /> },
   { id: 'explainability', label: 'Explain', icon: <Lightbulb size={14} /> },
   { id: 'audit', label: 'Audit Trail', icon: <Clock size={14} /> },
 ]
@@ -355,12 +357,19 @@ export default function App() {
               </div>
             )}
 
+            {activeTab === 'data-analysis' && (
+              <DataAnalysisDashboard
+                metrics={(state as any).data_analysis_metrics || {}}
+              />
+            )}
+
             {activeTab === 'dashboard' && (
               <InsightDashboard
                 leaderboard={state.model_leaderboard || []}
                 governance={state.governance_audit}
                 featureImportance={state.explainability?.global_shap_values || {}}
                 costEstimates={(state as any).cost_estimates || {}}
+                finalFeatures={state.feature_log?.final_feature_set || []}
               />
             )}
 
@@ -369,6 +378,7 @@ export default function App() {
                 globalShap={state.explainability?.global_shap_values || {}}
                 topFeatures={state.explainability?.top_features_summary || []}
                 localExamples={(state.explainability?.local_examples as any[]) || []}
+                finalFeatures={state.feature_log?.final_feature_set || []}
               />
             )}
 
