@@ -94,9 +94,13 @@ def run_model_selection(state: PipelineState) -> PipelineState:
         return state
 
     final_features = state.feature_log.final_feature_set
-    X_train, X_val, y_train, y_val, feature_names = _prepare_data(df, target_col, final_features, state)
-
-    if X_train is None:
+    try:
+        X_train, X_val, y_train, y_val, feature_names = _prepare_data(df, target_col, final_features, state)
+        if X_train is None:
+            return state
+    except Exception as e:
+        log_step_and_broadcast_sync(state, "model_selection", "Native Process Failed", f"Data preparation encountered an error: {e}")
+        state.is_paused = True
         return state
 
     # ── Handle Class Imbalance with SMOTE ────────────────────────────
@@ -111,23 +115,52 @@ def run_model_selection(state: PipelineState) -> PipelineState:
             state.smote_applied = True
             
             # Record BEFORE distribution
-            before_dist = y_train.value_counts().to_dict()
+            if isinstance(y_train, pd.Series):
+                before_dist = y_train.value_counts().to_dict()
+            else:
+                import numpy as np
+                u, c = np.unique(y_train, return_counts=True)
+                before_dist = dict(zip(u, c))
             before_dist_str = {str(k): int(v) for k, v in before_dist.items()}
             
-            # Fit SMOTE
-            smote = SMOTE(random_state=42)
-            X_train, y_train = smote.fit_resample(X_train, y_train)
+            log_step_and_broadcast_sync(state, "model_selection", "Target Imbalance Found", f"Training data exhibits class imbalance. Class distribution before oversampling: {before_dist_str}")
+            
+            # Fit Oversampler
+            oversampler_type = getattr(state.objective, "oversampler_type", "smote")
+            if oversampler_type == "smotetomek":
+                from imblearn.combine import SMOTETomek
+                oversampler = SMOTETomek(random_state=42)
+                method_name = "SMOTETomek"
+            elif oversampler_type == "smoteenn":
+                from imblearn.combine import SMOTEENN
+                oversampler = SMOTEENN(random_state=42)
+                method_name = "SMOTEENN"
+            else:
+                from imblearn.over_sampling import SMOTE
+                oversampler = SMOTE(random_state=42)
+                method_name = "SMOTE"
+                
+            X_train, y_train = oversampler.fit_resample(X_train, y_train)
             
             # Record AFTER distribution
-            after_dist = y_train.value_counts().to_dict()
+            if isinstance(y_train, pd.Series):
+                after_dist = y_train.value_counts().to_dict()
+            else:
+                import numpy as np
+                u, c = np.unique(y_train, return_counts=True)
+                after_dist = dict(zip(u, c))
             after_dist_str = {str(k): int(v) for k, v in after_dist.items()}
             
             state.smote_class_distributions = {
                 "before": before_dist_str,
                 "after": after_dist_str
             }
+            log_step_and_broadcast_sync(state, "model_selection", f"{method_name} Applied", f"Synthesized minority class samples to balance dataset. New distribution: {after_dist_str}")
         except Exception as e:
-            print(f"SMOTE failed to apply: {e}")
+            method_str = method_name if 'method_name' in locals() else "Oversampler"
+            log_step_and_broadcast_sync(state, "model_selection", f"{method_str} Failed", f"Attempted to apply {method_str} but failed: {e}")
+            state.is_paused = True
+            return state
 
     def _fmt(m: ModelLeaderboardEntry) -> str:
         if task_type in (TaskType.REGRESSION, "regression"):
@@ -245,9 +278,11 @@ def run_model_selection(state: PipelineState) -> PipelineState:
 
     state.model_leaderboard = candidates
     state.selected_model_name = best.model_name
-    log_step_and_broadcast_sync(state,"model_selection", "Best model selected",
-        f"{best.model_name} chosen with {_fmt(best)}. "
-        f"{len(candidates)} total candidates evaluated.")
+    
+    log_step_and_broadcast_sync(
+        state, "model_selection", "Best Model Selected",
+        f"Selected {best.model_name} (AUC: {best.auc_roc:.4f}) based on multi-objective optimization (performance + fairness)."
+    )
 
     # Update data_analysis_metrics with post-SMOTE distribution if applicable
     if state.smote_applied and state.smote_class_distributions.get("after"):
@@ -480,11 +515,22 @@ def _build_leaderboard_entry(
     try:
         if task_type not in (TaskType.REGRESSION, "regression"):
             if hasattr(model, "predict_proba"):
-                y_proba = model.predict_proba(X_val)[:, 1]
+                y_proba = model.predict_proba(X_val)
                 if len(np.unique(y_val)) == 2:
-                    entry.auc_roc = round(float(roc_auc_score(y_val, y_proba)), 4)
+                    classes = np.unique(y_val)
+                    y_val_bin = (y_val == classes[1]).astype(int)
+                    class_idx = list(model.classes_).index(classes[1]) if hasattr(model, "classes_") else 1
+                    entry.auc_roc = round(float(roc_auc_score(y_val_bin, y_proba[:, class_idx])), 4)
+                else:
+                    entry.auc_roc = None
+                
+                # Calibration curve (requires 1D probabilities)
+                if len(np.unique(y_val)) == 2:
+                    y_proba_1d = y_proba[:, class_idx]
+                else:
+                    y_proba_1d = y_proba[:, 1] if y_proba.shape[1] > 1 else y_proba[:, 0]
                 # Calibration curve
-                frac_pos, mean_pred = calibration_curve(y_val, y_proba, n_bins=10, strategy="quantile")
+                frac_pos, mean_pred = calibration_curve(y_val_bin if len(np.unique(y_val)) == 2 else y_val, y_proba_1d, n_bins=10, strategy="quantile")
                 entry.calibration_curve = [
                     CalibrationPoint(
                         bin_mean_predicted=round(float(m), 4),
@@ -501,9 +547,12 @@ def _build_leaderboard_entry(
                 y_train_pred = model.predict(X_train)
                 entry.train_f1_score = round(float(f1_score(y_train, y_train_pred, average="weighted", zero_division=0)), 4)
                 if hasattr(model, "predict_proba"):
-                    y_train_proba = model.predict_proba(X_train)[:, 1]
+                    y_train_proba = model.predict_proba(X_train)
                     if len(np.unique(y_train)) == 2:
-                        entry.train_auc_roc = round(float(roc_auc_score(y_train, y_train_proba)), 4)
+                        classes = np.unique(y_train)
+                        y_train_bin = (y_train == classes[1]).astype(int)
+                        class_idx = list(model.classes_).index(classes[1]) if hasattr(model, "classes_") else 1
+                        entry.train_auc_roc = round(float(roc_auc_score(y_train_bin, y_train_proba[:, class_idx])), 4)
         else:
             from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
             y_pred = model.predict(X_val)
@@ -615,7 +664,21 @@ def _prepare_data(
                     steps.append(("encoder", OneHotEncoder(handle_unknown='ignore', sparse_output=False)))
             else:
                 # Numeric features get scaled
-                steps.append(("scaler", StandardScaler()))
+                scaler_type = getattr(state.objective, "numeric_scaler", "standard")
+                if scaler_type == "robust":
+                    from sklearn.preprocessing import RobustScaler
+                    steps.append(("scaler", RobustScaler()))
+                elif scaler_type == "minmax":
+                    from sklearn.preprocessing import MinMaxScaler
+                    steps.append(("scaler", MinMaxScaler()))
+                elif scaler_type == "quantile":
+                    from sklearn.preprocessing import QuantileTransformer
+                    steps.append(("scaler", QuantileTransformer(output_distribution="uniform", random_state=42)))
+                elif scaler_type == "power":
+                    from sklearn.preprocessing import PowerTransformer
+                    steps.append(("scaler", PowerTransformer(method="yeo-johnson")))
+                else:
+                    steps.append(("scaler", StandardScaler()))
                 
             transformers.append((col, Pipeline(steps), [col]))
             
@@ -629,6 +692,17 @@ def _prepare_data(
         else:
             feature_names = feature_cols
             
+        # Optional Polynomial Features
+        if state.objective.feature_optimization == "polynomial":
+            from sklearn.preprocessing import PolynomialFeatures
+            poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
+            X_processed = poly.fit_transform(X_processed)
+            if hasattr(poly, "get_feature_names_out"):
+                feature_names = poly.get_feature_names_out(feature_names)
+            else:
+                feature_names = [f"poly_{i}" for i in range(X_processed.shape[1])]
+            state.log_step("model_selection", "Polynomial Features", f"Generated {X_processed.shape[1]} interaction features.")
+
         # Optional PCA Optimization
         if state.objective.feature_optimization == "pca":
             from sklearn.decomposition import PCA
@@ -638,10 +712,24 @@ def _prepare_data(
             state.log_step("model_selection", "PCA Applied", f"Reduced dimensions to {X_processed.shape[1]} components capturing 95% variance.")
 
         X_train, X_val, y_train, y_val = train_test_split(X_processed, y, test_size=0.25, random_state=42)
+        
+        # Outlier Removal on Training Data
+        if getattr(state.objective, "outlier_removal", "none") == "isolation_forest":
+            from sklearn.ensemble import IsolationForest
+            iso = IsolationForest(contamination=0.05, random_state=42)
+            yhat = iso.fit_predict(X_train)
+            mask = yhat != -1
+            X_train = X_train[mask]
+            if isinstance(y_train, pd.Series):
+                y_train = y_train.iloc[mask]
+            elif isinstance(y_train, np.ndarray):
+                y_train = y_train[mask]
+            state.log_step("model_selection", "Isolation Forest", f"Removed outliers from training set. New train size: {X_train.shape[0]}")
+
         return X_train, X_val, y_train, y_val, feature_names
     except Exception as e:
         print(f"Error in prepare_data: {e}")
-        return None, None, None, None, None
+        raise ValueError(f"Native Data Preparation Failed: {e}")
 
 
 def _compute_auc(model, X_val, y_val, task_type: str) -> float:

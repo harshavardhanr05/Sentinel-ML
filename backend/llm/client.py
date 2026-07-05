@@ -242,6 +242,6 @@ def _parse_json_safe(text: str) -> dict[str, Any]:
     cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*```$", "", cleaned.strip())
     try:
-        return json.loads(cleaned)
+        return json.loads(cleaned, strict=False)
     except json.JSONDecodeError as e:
         raise ValueError(f"LLM response is not valid JSON.\nResponse: {text[:500]}\nError: {e}") from e

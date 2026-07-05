@@ -111,6 +111,12 @@ function CustomNode({ data }: { data: any }) {
       {/* Handles for ReactFlow edges */}
       <Handle type="target" position={Position.Left} className="w-2 h-2 !bg-surface-500 border-none" />
       <Handle type="source" position={Position.Right} className="w-2 h-2 !bg-surface-500 border-none" />
+      
+      {/* Invisible Top/Bottom handles for custom edge routing (like governance loopbacks) */}
+      <Handle type="source" position={Position.Top} id="top" className="opacity-0 pointer-events-none" />
+      <Handle type="target" position={Position.Top} id="top-target" className="opacity-0 pointer-events-none" />
+      <Handle type="source" position={Position.Bottom} id="bottom" className="opacity-0 pointer-events-none" />
+      <Handle type="target" position={Position.Bottom} id="bottom-target" className="opacity-0 pointer-events-none" />
 
       <div className="flex items-center gap-3 mb-3">
         <div className={clsx("p-2 rounded-lg bg-surface-900/50", theme.iconColor)}>
@@ -157,11 +163,14 @@ export default function PipelineDAG({ stageStatuses, currentStage, isPaused, gov
       const statuses = stageStatuses || {}
       const status = (statuses as any)[stage] || 'pending'
       
+      // Wrap into a 2-row grid (4 nodes per row)
+      const row = Math.floor(i / 4)
+      const col = i % 4
+
       return {
         id: stage,
         type: 'custom',
-        // Horizontal Layout: X increases by 280 for each node, Y is vertically centered
-        position: { x: i * 280, y: 150 },
+        position: { x: col * 280, y: row * 220 + 100 },
         data: {
           stage,
           status,
@@ -204,7 +213,7 @@ export default function PipelineDAG({ stageStatuses, currentStage, isPaused, gov
         target: 'feature_engineering',
         type: 'smoothstep',
         sourceHandle: 'top',
-        targetHandle: 'top',
+        targetHandle: 'bottom-target',
         markerEnd: { type: MarkerType.ArrowClosed, color: '#f97316' },
         style: { stroke: '#f97316', strokeWidth: 2, strokeDasharray: '5,5' },
         label: 'FAIL → retry',
@@ -227,16 +236,16 @@ export default function PipelineDAG({ stageStatuses, currentStage, isPaused, gov
         nodeTypes={nodeTypes}
         fitView
         fitViewOptions={{ padding: 0.2 }}
-        nodesDraggable={true}
+        nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={false}
+        zoomOnScroll={false}
+        zoomOnPinch={false}
+        zoomOnDoubleClick={false}
+        panOnDrag={false}
         proOptions={{ hideAttribution: true }}
       >
         <Background color="#334155" gap={24} size={2} className="opacity-40" />
-        <Controls 
-          className="bg-surface-800 border border-surface-600 rounded-lg shadow-xl overflow-hidden fill-slate-300" 
-          showInteractive={false}
-        />
       </ReactFlow>
     </div>
   )

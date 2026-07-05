@@ -27,6 +27,7 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 from backend.state.schema import ExplainabilityOutput, PipelineState
+from backend.state.store import log_step_and_broadcast_sync
 
 try:
     import shap
@@ -77,7 +78,10 @@ def run_explainability(state: PipelineState) -> PipelineState:
         y_sample = y_val[:sample_size]
 
         explainer = _build_explainer(model, X_sample)
+        
+        log_step_and_broadcast_sync(state, "explainability", "TreeExplainer Execution Started", f"Computing SHAP values for top {sample_size} validation samples to determine global feature importance.")
         shap_values = explainer(X_sample)
+        log_step_and_broadcast_sync(state, "explainability", "SHAP Computation Complete", "Global feature importances calculated successfully.")
 
         # Handle multi-output SHAP (binary classification → use positive class)
         if hasattr(shap_values, "values"):

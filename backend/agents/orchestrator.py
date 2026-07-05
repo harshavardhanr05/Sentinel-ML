@@ -23,6 +23,7 @@ from typing import Any, Dict, List
 
 from backend.llm.client import get_llm_json
 from backend.state.schema import ObjectiveState, PipelineState, TaskType
+from backend.state.store import log_step_and_broadcast_sync
 
 # ---------------------------------------------------------------------------
 # Prompt templates
@@ -66,25 +67,65 @@ Rules:
 """
 
 _COUNTER_PROPOSE_PROMPT = """
-The user has counter-proposed a change to the orchestrator's initial parsing:
+The user has counter-proposed a change to the pipeline's current configuration or stage:
 User suggestion: "{user_note}"
 
-Original parsing:
+Current Context / Original parsing:
 {original}
+
+Analyze the user's suggestion critically. You must explicitly identify any flaws, drawbacks, or risks associated with the user's suggestion in this specific context (e.g., loss of explainability, increased bias, risk of overfitting). Also identify any benefits or betterments.
+
+CRITICAL FORMATTING INSTRUCTIONS:
+- Keep the `user_suggestion_interpretation` to a single, short sentence.
+- Keep the lists of flaws and benefits extremely concise. Use short, punchy, single-sentence bullet points (max 2-3 of each).
+- DO NOT write long, verbose paragraphs. Get straight to the point.
+- Be highly specific to this particular dataset and scenario.
+- You MUST escape all newlines in the python code as \n. Do NOT use literal newlines inside the JSON string value for "generated_code", or parsing will fail.
+
+CRITICAL INSTRUCTION FOR CODE GENERATION:
+If the user's suggestion requires a data transformation or manipulation (e.g., polynomial features, Yeo-Johnson, dropping columns, custom imputation), you MUST provide a standalone Python function named `apply_transformation(df)` that implements this exact suggestion on a Pandas DataFrame `df` and returns the modified `df`.
+- Assume `import pandas as pd` and `import numpy as np` are already available.
+- Include any other specific imports (like from sklearn) INSIDE the function.
+- If the suggestion is just choosing a different model or objective, set "generated_code" to null.
 
 Respond with a structured pros/cons comparison as JSON:
 {{
-  "agent_choice": {{...original fields...}},
-  "user_suggestion_interpretation": "what the user seems to want",
-  "pros_of_agent_choice": ["list"],
-  "cons_of_agent_choice": ["list"],
-  "pros_of_user_suggestion": ["list"],
-  "cons_of_user_suggestion": ["list"],
-  "recommendation": "agent_choice or user_suggestion",
-  "recommendation_reasoning": "one sentence"
+  "user_suggestion_interpretation": "Single short sentence.",
+  "flaws_and_drawbacks_of_user_suggestion": ["Short punchy flaw 1", "Short punchy flaw 2"],
+  "benefits_of_user_suggestion": ["Short punchy benefit 1", "Short punchy benefit 2"],
+  "recommendation_reasoning": "one sentence summarizing the trade-off",
+  "generated_code": "def apply_transformation(df):\\n    # your code\\n    return df"
 }}
 """
 
+_FIX_CODE_PROMPT = """
+You previously generated a Python script to manipulate a Pandas DataFrame based on a user's request, but it failed to execute or timed out.
+Your task is to fix the error and provide the corrected code.
+
+Original Context / Request:
+{context_msg}
+
+Original Code:
+```python
+{original_code}
+```
+
+Error Message / Timeout Encountered:
+{error_message}
+
+CRITICAL INSTRUCTIONS:
+- Return a JSON object with a single key "generated_code".
+- The value must be the fully corrected Python code defining `def apply_transformation(df):` that takes a Pandas DataFrame and returns it.
+- Fix the issue described in the error message.
+- Include all necessary imports inside the function.
+- Assume `import pandas as pd` and `import numpy as np` are globally available.
+- You MUST escape all newlines in the python code as \n. Do NOT use literal newlines inside the JSON string value for "generated_code".
+
+Respond exactly as JSON:
+{{
+  "generated_code": "def apply_transformation(df):\\n    # fixed code\\n    return df"
+}}
+"""
 
 # ---------------------------------------------------------------------------
 # Main entry point
@@ -135,11 +176,13 @@ def run_orchestrator(state: PipelineState) -> PipelineState:
             action = "Paused pipeline. Inferred likely target candidates and requesting clarification."
             proposed = "Clarify objective and target column"
             reasoning = " ".join(obj.clarification_needed) or "Could not parse objective automatically. Please choose from the inferred target columns below or type it manually."
+            log_step_and_broadcast_sync(state, "objective_intake", "Ambiguous Objective", "The provided objective lacked a clear target column. Pausing to ask for user clarification.")
         else:
             problem = "Please confirm the AI's understanding of the objective and target column."
             action = f"Parsed target column as '{obj.target_column}'. Pausing for user confirmation."
             proposed = f"Proceed with target column: {obj.target_column}"
             reasoning = f"Based on the objective, the AI determined '{obj.target_column}' is the best target. If this is incorrect, you can change it below."
+            log_step_and_broadcast_sync(state, "objective_intake", "Objective Parsed", f"Successfully parsed objective. Inferred target column: '{obj.target_column}'. Task type: {obj.task_type.value}.")
 
         card = DecisionCard(
             stage="objective_intake",
@@ -165,21 +208,49 @@ def handle_counter_propose(
     state: PipelineState, user_note: str
 ) -> Dict[str, Any]:
     """
-    When the user counter-proposes at the objective checkpoint, return a
-    structured pros/cons comparison (not silent compliance).
+    When the user counter-proposes at a checkpoint, return a
+    structured pros/cons comparison evaluating the user's suggestion.
     """
-    original = state.objective.model_dump()
+    if state.pending_approval:
+        original = state.pending_approval.model_dump()
+    else:
+        original = state.objective.model_dump()
+        
+    safe_original = json.dumps(original, indent=2).replace("{", "{{").replace("}", "}}")
     prompt = _COUNTER_PROPOSE_PROMPT.format(
-        user_note=user_note,
-        original=json.dumps(original, indent=2),
+        user_note=user_note.replace("{", "{{").replace("}", "}}"),
+        original=safe_original,
     )
     try:
+        from backend.llm.client import get_llm_json
         return get_llm_json(prompt)
-    except Exception:
+    except Exception as e:
+        print(f"Error in handle_counter_propose: {e}")
         return {
             "recommendation": "user_suggestion",
             "recommendation_reasoning": "Deferring to user preference as the automatic comparison could not be generated.",
         }
+
+
+def fix_generated_code(original_code: str, error_msg: str, context_msg: str = "") -> Optional[str]:
+    """
+    Called when a dynamically generated AI script fails. Asks the LLM to fix it based on the error.
+    """
+    safe_code = original_code.replace("{", "{{").replace("}", "}}")
+    safe_error = error_msg.replace("{", "{{").replace("}", "}}")
+    safe_context = context_msg.replace("{", "{{").replace("}", "}}")
+    prompt = _FIX_CODE_PROMPT.format(
+        original_code=safe_code,
+        error_message=safe_error,
+        context_msg=safe_context,
+    )
+    try:
+        from backend.llm.client import get_llm_json
+        result = get_llm_json(prompt)
+        return result.get("generated_code")
+    except Exception as e:
+        print(f"Error in fix_generated_code: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------

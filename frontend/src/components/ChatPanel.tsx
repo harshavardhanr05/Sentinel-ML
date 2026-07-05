@@ -98,7 +98,7 @@ export default function ChatPanel({ decisions, currentStage, errorMessage }: Pro
 
                 {entry.agent_justification && (
                   <div className="ml-7 bg-brand-900/20 rounded-lg p-2.5 border border-brand-800/30 mb-2">
-                    <p className="text-xs text-brand-300 leading-relaxed">{entry.agent_justification}</p>
+                    <p className="text-xs text-brand-300 leading-relaxed whitespace-pre-wrap">{entry.agent_justification}</p>
                   </div>
                 )}
               </div>

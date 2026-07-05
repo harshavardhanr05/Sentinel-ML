@@ -98,7 +98,19 @@ class ObjectiveState(BaseModel):
     )
     clarification_needed: List[str] = Field(
         default_factory=list,
-        description="List of fields the user needs to clarify",
+        description="Questions to ask if objective is ambiguous",
+    )
+    numeric_scaler: str = Field(
+        default="standard",
+        description="Type of scaler to apply to numeric features: 'standard', 'robust', 'minmax'",
+    )
+    outlier_removal: str = Field(
+        default="none",
+        description="Type of outlier removal to apply: 'none', 'isolation_forest'",
+    )
+    oversampler_type: str = Field(
+        default="smote",
+        description="Type of oversampler to use for class imbalance: 'smote', 'smotetomek', 'smoteenn'",
     )
     feature_selection_top_k: Optional[int] = None
     feature_optimization: str = Field(
@@ -313,6 +325,9 @@ class ExplainabilityOutput(BaseModel):
     )
     shap_plot_path: Optional[str] = Field(
         default=None, description="Saved PNG path for the global SHAP summary plot"
+    )
+    llm_narrative: Optional[str] = Field(
+        default=None, description="LLM-generated explanation of the SHAP values"
     )
 
 

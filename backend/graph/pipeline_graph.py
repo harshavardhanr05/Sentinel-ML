@@ -64,6 +64,30 @@ def make_checkpoint_node(stage_name: str):
     return checkpoint_node
 
 
+def _generate_dynamic_alternatives(stage: str, context: str, default_alts: list[str]) -> list[str]:
+    """Helper to generate contextual alternative actions using the LLM."""
+    try:
+        from backend.llm.client import get_llm_json
+        prompt = f"""
+You are an expert Data Scientist. Based on the current pipeline stage and context, generate exactly 3 contextual, highly-specific alternative actions the user could take right now instead of just proceeding with the default proposal.
+Stage: {stage}
+Context: {context}
+
+Return a JSON array of 3 short, actionable strings (e.g. "Use PCA dimensionality reduction", "Apply SMOTE class balancing"). 
+Do not include markdown blocks, just the JSON array.
+"""
+        result = get_llm_json(prompt)
+        if isinstance(result, list) and len(result) > 0:
+            return [str(r) for r in result[:3]]
+        if isinstance(result, dict) and "alternatives" in result:
+            alts = result["alternatives"]
+            if isinstance(alts, list) and len(alts) > 0:
+                return [str(a) for a in alts[:3]]
+    except Exception:
+        pass
+    return default_alts
+
+
 # ---------------------------------------------------------------------------
 # Node: orchestrator
 # ---------------------------------------------------------------------------
@@ -153,11 +177,15 @@ def node_data_profiling(state: PipelineState) -> PipelineState:
                 f"Severity summary: {report.severity_summary}. "
                 "Approving will begin feature transformation proposals."
             ),
-            alternatives_considered=[
-                "Drop all columns with >30% missingness before feature engineering",
-                "Apply SMOTE for class imbalance before model selection",
-                "Exclude flagged leakage columns immediately",
-            ],
+            alternatives_considered=_generate_dynamic_alternatives(
+                stage="data_profiling", 
+                context=f"Data profiled. Missingness max severity: {report.severity_summary.get('missingness')}. Imbalance ratio: {report.imbalance_ratio}. Leakage flags: {len(report.leakage_flags)}.",
+                default_alts=[
+                    "Drop all columns with >30% missingness before feature engineering",
+                    "Apply SMOTE for class imbalance before model selection",
+                    "Exclude flagged leakage columns immediately",
+                ]
+            ),
             metrics_summary={
                 "rows": report.row_count,
                 "columns": report.column_count,
@@ -223,11 +251,15 @@ def node_feature_engineering(state: PipelineState) -> PipelineState:
             f"{len(gov_flagged)} were rejected after Governance flagged them as likely "
             "fairness proxies. Final feature set is ready for model training."
         ),
-        alternatives_considered=[
-            "Use PCA instead of individual feature selection",
-            "Add polynomial interaction terms for top-3 features",
-            "Use target encoding instead of one-hot for high-cardinality categoricals",
-        ],
+        alternatives_considered=_generate_dynamic_alternatives(
+            stage="feature_engineering",
+            context=f"Accepted {accepted} features, rejected {rejected}. Governance flagged {len(gov_flagged)} features.",
+            default_alts=[
+                "Use PCA instead of individual feature selection",
+                "Add polynomial interaction terms for top-3 features",
+                "Use target encoding instead of one-hot for high-cardinality categoricals",
+            ]
+        ),
         metrics_summary={
             "accepted_features": accepted,
             "rejected_features": rejected,
@@ -296,10 +328,14 @@ def node_model_selection(state: PipelineState) -> PipelineState:
                 f"(AUC/R2 + fairness proxy). "
                 f"Cost-vs-performance trade-offs have been estimated for all candidates."
             ),
-            alternatives_considered=[
-                f"Select {m.model_name} instead (lower cost, different metric tradeoff)" 
-                for m in state.model_leaderboard if m.model_name != best.model_name
-            ],
+            alternatives_considered=_generate_dynamic_alternatives(
+                stage="model_selection",
+                context=f"Trained {len(state.model_leaderboard)} models. Best model is {best.model_name} with metric {auc_val:.3f}. Other options: {', '.join([m.model_name for m in state.model_leaderboard if not m.is_selected][:3])}.",
+                default_alts=[
+                    f"Select {m.model_name} instead (lower cost, different metric tradeoff)" 
+                    for m in state.model_leaderboard if not m.is_selected
+                ][:3]
+            ),
             cost_estimate=best.cost_estimate_note,
             metrics_summary={
                 "selected_model": best.model_name,
@@ -347,6 +383,7 @@ def node_governance(state: PipelineState) -> PipelineState:
     save_state_sync(state)
 
     state = run_governance(state)
+    state.mark_stage("governance", StageStatus.COMPLETE)
     save_state_sync(state)
     return state
 

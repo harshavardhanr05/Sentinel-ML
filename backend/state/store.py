@@ -70,6 +70,14 @@ def get_async_engine() -> AsyncEngine:
         _async_engine = create_async_engine(_ASYNC_DB_URL, echo=False)
     return _async_engine
 
+_sync_engine = None
+
+def get_sync_engine():
+    global _sync_engine
+    if _sync_engine is None:
+        _sync_engine = create_engine(_DB_URL, connect_args={"check_same_thread": False})
+    return _sync_engine
+
 
 async def init_db() -> None:
     """Create the pipeline_runs table if it doesn't exist. Called on FastAPI startup."""
@@ -186,24 +194,49 @@ async def delete_run(run_id: str) -> bool:
 
 def save_state_sync(state: PipelineState) -> None:
     """Synchronous version of save_state for use inside LangGraph nodes."""
-    import asyncio
+    engine = get_sync_engine()
+    state_dict = state.model_dump(mode="json")
+    state_json = json.dumps(state_dict, default=str)
+    now = datetime.utcnow().isoformat()
 
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(save_state(state))
-    finally:
-        loop.close()
+    with engine.begin() as conn:
+        result = conn.execute(
+            update(pipeline_runs)
+            .where(pipeline_runs.c.run_id == state.run_id)
+            .values(
+                state_json=state_json,
+                current_stage=state.current_stage,
+                is_paused=int(state.is_paused),
+                updated_at=now,
+            )
+        )
+        if result.rowcount == 0:
+            conn.execute(
+                insert(pipeline_runs).values(
+                    run_id=state.run_id,
+                    state_json=state_json,
+                    current_stage=state.current_stage,
+                    is_paused=int(state.is_paused),
+                    created_at=state.created_at.isoformat() if state.created_at else now,
+                    updated_at=now,
+                )
+            )
 
 
 def load_state_sync(run_id: str) -> Optional[PipelineState]:
     """Synchronous version of load_state."""
-    import asyncio
-
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(load_state(run_id))
-    finally:
-        loop.close()
+    engine = get_sync_engine()
+    with engine.connect() as conn:
+        result = conn.execute(
+            select(pipeline_runs.c.state_json).where(
+                pipeline_runs.c.run_id == run_id
+            )
+        )
+        row = result.fetchone()
+        if row is None:
+            return None
+        state_dict = json.loads(row.state_json)
+        return PipelineState.model_validate(state_dict)
 
 
 def log_step_and_broadcast_sync(state: PipelineState, stage: str, step_name: str, details: str) -> None:

@@ -10,7 +10,7 @@
 import React, { useState, useCallback } from 'react'
 import {
   Shield, Upload, Play, ChevronRight, Database,
-  BarChart2, Clock, Lightbulb, MessageSquare, Zap, AlertCircle, TrendingUp
+  BarChart2, Clock, Lightbulb, MessageSquare, Zap, AlertCircle, TrendingUp, FileText, FileCode
 } from 'lucide-react'
 import {
   createRun, getRunState, listRuns, useRunWebSocket,
@@ -321,6 +321,24 @@ export default function App() {
                         <div className="flex justify-between">
                           <span className="text-slate-400">Governance loops</span>
                           <span className="font-bold text-orange-400">{state.governance_audit.iteration_count}</span>
+                        </div>
+                      )}
+                      {state.current_stage === 'completed' && (
+                        <div className="pt-4 mt-4 border-t border-surface-700/50 space-y-2">
+                          <button
+                            onClick={() => window.open(`http://localhost:8000/runs/${activeRunId}/model-card`, '_blank')}
+                            className="btn-secondary w-full justify-center flex items-center gap-2"
+                          >
+                            <FileText size={14} />
+                            View Model Card
+                          </button>
+                          <button
+                            onClick={() => window.open(`http://localhost:8000/runs/${activeRunId}/audit-trail`, '_blank')}
+                            className="btn-secondary w-full justify-center flex items-center gap-2"
+                          >
+                            <FileCode size={14} />
+                            View Audit Trail
+                          </button>
                         </div>
                       )}
                     </div>

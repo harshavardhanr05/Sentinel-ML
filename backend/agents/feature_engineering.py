@@ -129,6 +129,9 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
     df = _load_dataset(dataset_path)
 
     target_col = state.objective.target_column
+    
+    log_step_and_broadcast_sync(state, "feature_engineering", "Feature Engineering Started", "Initializing feature selection, imputation, and encoding pipelines.")
+    
     task_type = state.objective.task_type
     protected_attrs = state.objective.protected_attributes
     leakage_cols = {f["column"] for f in (state.data_health_report.leakage_flags if state.data_health_report else [])}
@@ -164,6 +167,7 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
             objective_text=state.objective.raw_text,
             schema=json.dumps(schema_info, indent=2)
         )
+        log_step_and_broadcast_sync(state, "feature_engineering", "AI Semantic Selection Started", f"Analyzing {len(schema_info)} features for semantic relevance to the objective.")
         semantic_result = get_llm_json(prompt)
         feature_reasoning = semantic_result.get("feature_reasoning", [])
         
@@ -440,6 +444,12 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
         rejected=rejected,
         final_feature_set=final_features,
     )
+    
+    # Calculate imputation/encoding stats for logging
+    imputed_count = len([e for e in accepted if e.imputation_strategy and e.imputation_strategy != "none"])
+    encoded_count = len([e for e in accepted if e.transformation in ["one_hot", "target_encode", "frequency_encode"]])
+    
+    log_step_and_broadcast_sync(state, "feature_engineering", "Feature Transformation Summary", f"Finalized {len(final_features)} features. Applied missing value imputation to {imputed_count} features, and categorical encoding to {encoded_count} features.")
 
     return state
 
@@ -516,7 +526,13 @@ def _quick_score(
             return float(r2_score(y_val, model.predict(X_val)))
         else:
             if len(np.unique(y_val)) == 2:
-                return float(roc_auc_score(y_val, model.predict_proba(X_val)[:, 1]))
+                # Need to map the two unique values to 0 and 1 so roc_auc_score doesn't fail
+                classes = np.unique(y_val)
+                y_val_bin = (y_val == classes[1]).astype(int)
+                y_proba = model.predict_proba(X_val)
+                # If model was trained on more than 2 classes, find the index of classes[1]
+                class_idx = list(model.classes_).index(classes[1]) if hasattr(model, "classes_") else 1
+                return float(roc_auc_score(y_val_bin, y_proba[:, class_idx]))
             else:
                 return float(f1_score(y_val, model.predict(X_val), average="weighted"))
     except Exception:

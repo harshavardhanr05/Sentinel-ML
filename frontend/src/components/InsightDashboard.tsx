@@ -138,14 +138,14 @@ export default function InsightDashboard({ leaderboard, governance, featureImpor
             label="Disparate Impact"
             value={di}
             threshold={diThreshold}
-            status={governance.fairness.status}
+            status={di !== null && di !== undefined && diThreshold !== undefined ? (di >= diThreshold ? 'PASS' : 'FAIL') : governance.fairness.status}
             description={`Protected: ${governance.fairness.protected_attribute || 'N/A'}`}
           />
           <MetricCard
             label="Equal Opp. Difference"
             value={eod}
             threshold={eodThreshold}
-            status={governance.fairness.status}
+            status={eod !== null && eod !== undefined && eodThreshold !== undefined ? (eod <= eodThreshold ? 'PASS' : 'FAIL') : governance.fairness.status}
             description="Lower is better (|TPR_gap|)"
           />
           <MetricCard

@@ -181,7 +181,7 @@ function CheckpointCard({ entry }: { entry: DecisionLogEntry }) {
                 <Bot size={12} className="text-brand-400" />
                 <span className="text-[10px] font-bold uppercase text-brand-400">Agent Response to Suggestion</span>
               </div>
-              <p className="text-sm text-slate-300 leading-relaxed">
+              <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
                 {typeof entry.agent_justification === 'string'
                   ? entry.agent_justification
                   : JSON.stringify(entry.agent_justification, null, 2)}

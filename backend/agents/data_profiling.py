@@ -32,6 +32,7 @@ from backend.state.schema import (
     PipelineState,
     TaskType,
 )
+from backend.state.store import log_step_and_broadcast_sync
 
 # ---------------------------------------------------------------------------
 # Prompt Templates
@@ -114,13 +115,23 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
 
     target_col = state.objective.target_column
 
+    log_step_and_broadcast_sync(state, "data_profiling", "Data Profiling Started", "Commencing deep data health scans: missingness, leakage, PII, and imbalance checks.")
+
     # Run all profiling steps
     column_profiles = _profile_columns(df)
+    log_step_and_broadcast_sync(state, "data_profiling", "Schema Discovery Complete", f"Profiled {len(column_profiles)} columns.")
+    
     missingness_flags = _compute_missingness_flags(df)
     mnar_flags = _detect_mnar(df)
+    log_step_and_broadcast_sync(state, "data_profiling", "Missingness Scan Complete", f"Found {len(missingness_flags)} columns with high missingness. {len(mnar_flags)} MNAR patterns detected.")
+    
     leakage_flags = _detect_leakage(df, target_col) if target_col else []
     imbalance_ratio, imbalance_flag = _compute_imbalance(df, target_col, state.objective.task_type)
+    
     pii_cols = _detect_pii_columns(df)
+    if pii_cols:
+        log_step_and_broadcast_sync(state, "data_profiling", "PII/Sensitive Data Detected", f"Potential PII found in columns: {pii_cols}. These will be dropped for security.")
+        
     severity_summary = _build_severity_summary(missingness_flags, leakage_flags, imbalance_flag)
 
     report = DataHealthReport(
@@ -138,12 +149,17 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
     )
 
     state.data_health_report = report
+    
+    if leakage_flags:
+        leakage_cols = [f['column'] for f in leakage_flags]
+        log_step_and_broadcast_sync(state, "data_profiling", "Target Leakage Detected", f"Found {len(leakage_flags)} columns highly correlated with target: {leakage_cols}. These will be dropped.")
+        
     state.data_schema = {
         "columns": list(df.columns),
         "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
         "shape": [len(df), len(df.columns)],
     }
-    state.log_step("data_profiling", "Dataset loaded",
+    log_step_and_broadcast_sync(state, "data_profiling", "Dataset loaded",
         f"{len(df)} rows x {len(df.columns)} columns. "
         f"Missingness flags: {len(missingness_flags)} columns. "
         f"Leakage flags: {len(leakage_flags)}. "
@@ -228,7 +244,7 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
             )
             res = get_llm_json(prompt)
             ai_charts = res.get("charts", [])
-            state.log_step("data_profiling", "AI chart selection",
+            log_step_and_broadcast_sync(state, "data_profiling", "AI chart selection",
                 f"AI recommended {len(ai_charts)} charts for the analytics dashboard.")
     except Exception:
         pass
@@ -246,17 +262,84 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
 # ---------------------------------------------------------------------------
 
 
+def _clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    import re
+    
+    # 1. Column Name Standardization
+    new_cols = []
+    for c in df.columns:
+        c_clean = str(c).strip()
+        c_clean = re.sub(r'\s+', '_', c_clean)
+        c_clean = re.sub(r'[\[\]<>]', '', c_clean) # Remove characters that crash LightGBM/XGBoost
+        new_cols.append(c_clean)
+    df.columns = new_cols
+
+    # 2. Global Missing Value Normalization
+    missing_placeholders = {"?", "n/a", "na", "null", "missing", "-", "", " "}
+    for col in df.select_dtypes(include=["object"]):
+        # First, strip whitespace
+        df[col] = df[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
+        # Then, replace missing placeholders with np.nan
+        df[col] = df[col].apply(lambda x: np.nan if isinstance(x, str) and x.lower() in missing_placeholders else x)
+
+    # 3. Infinity Handling
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    # 4. Intelligent Type Coercion
+    for col in df.select_dtypes(include=["object"]):
+        # Try to convert to numeric
+        numeric_series = pd.to_numeric(df[col], errors="coerce")
+        # If more than 90% of non-null values were successfully converted to numeric, keep it numeric
+        non_null_original = df[col].notna().sum()
+        if non_null_original > 0:
+            converted_ratio = numeric_series.notna().sum() / non_null_original
+            if converted_ratio > 0.90:
+                df[col] = numeric_series
+
+    # 5. Boolean/Binary Standardization
+    # If all non-null values map to a standard boolean set, convert them to 1/0
+    valid_pos = {"yes", "y", "true", "t", "1", "1.0"}
+    valid_neg = {"no", "n", "false", "f", "0", "0.0"}
+    
+    for col in df.select_dtypes(include=["object"]):
+        non_nulls = df[col].dropna()
+        if len(non_nulls) == 0:
+            continue
+            
+        lower_vals = {str(v).lower().strip() for v in non_nulls.unique()}
+        # If the set of unique lowercased values is a subset of valid pos+neg
+        # AND it actually contains at least one positive and one negative (to not binarize constant columns)
+        if lower_vals.issubset(valid_pos.union(valid_neg)) and len(lower_vals) > 1:
+            df[col] = df[col].apply(lambda x: 1 if pd.notna(x) and str(x).lower().strip() in valid_pos else 0 if pd.notna(x) else np.nan)
+
+    # 6. Zero-Variance / Empty Column Pruning
+    cols_to_drop = []
+    for col in df.columns:
+        if df[col].isna().all():
+            cols_to_drop.append(col)
+        elif df[col].nunique(dropna=True) <= 1:
+            cols_to_drop.append(col)
+    if cols_to_drop:
+        df.drop(columns=cols_to_drop, inplace=True)
+
+    return df
+
 def _load_dataset(path: str) -> pd.DataFrame:
     ext = os.path.splitext(path)[1].lower()
     if ext in (".parquet", ".pq"):
-        return pd.read_parquet(path)
+        df = pd.read_parquet(path)
     elif ext == ".csv":
-        return pd.read_csv(path, low_memory=False)
+        df = pd.read_csv(path, low_memory=False)
     elif ext == ".tsv":
-        return pd.read_csv(path, sep="\t", low_memory=False)
+        df = pd.read_csv(path, sep="\t", low_memory=False)
     else:
         # Try CSV as fallback
-        return pd.read_csv(path, low_memory=False)
+        df = pd.read_csv(path, low_memory=False)
+        
+    df = _clean_dataset(df)
+        
+    return df
+
 
 
 # ---------------------------------------------------------------------------

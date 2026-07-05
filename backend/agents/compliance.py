@@ -20,6 +20,7 @@ from typing import Any, Dict
 import yaml
 
 from backend.state.schema import PipelineState
+from backend.state.store import log_step_and_broadcast_sync
 
 _CONFIG_DIR = os.getenv("COMPLIANCE_CONFIG_DIR", "./backend/config/compliance/")
 
@@ -35,6 +36,8 @@ def run_compliance(state: PipelineState) -> PipelineState:
     # Inject into governance_audit
     state.governance_audit.compliance_checklist = config.get("regulations", [])
     state.governance_audit.compliance_thresholds = config.get("fairness_thresholds", {})
+    
+    log_step_and_broadcast_sync(state, "compliance", "Compliance Rules Loaded", f"Loaded regulatory thresholds for domain '{domain_tag}': {list(state.governance_audit.compliance_thresholds.keys())}")
 
     return state
 

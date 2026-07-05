@@ -262,6 +262,7 @@ async def submit_decision(run_id: str, request: DecisionRequest):
     # Update the last pending decision log entry
     pending_card = state.pending_approval
     agent_justification = None
+    execution_failed_fatally = False
     
     if action == UserAction.APPROVE:
         if pending_card and pending_card.stage == "objective_intake" and getattr(state.objective, "is_ambiguous", False):
@@ -304,11 +305,243 @@ async def submit_decision(run_id: str, request: DecisionRequest):
                 
                 agent_justification = "Objective updated successfully based on your clarification."
         else:
-            # Get agent's pros/cons justification before proceeding for other stages
-            agent_justification = _get_agent_justification(state, request.note)
-            if request.note and "smote" in request.note.lower():
+            # Get agent's pros/cons justification and potential generated code
+            agent_justification, generated_code = _get_agent_justification(state, request.note)
+            
+            note_lower = request.note.lower() if request.note else ""
+            system_notes = []
+            
+            if "smotetomek" in note_lower or "smote-tomek" in note_lower:
                 state.smote_applied = True
-                agent_justification += "\n\nSystem Note: SMOTE class balancing has been queued for the Model Selection phase."
+                state.objective.oversampler_type = "smotetomek"
+                system_notes.append("SMOTETomek hybrid balancing has been queued for the Model Selection phase.")
+                generated_code = None
+            elif "smoteenn" in note_lower or "smote-enn" in note_lower:
+                state.smote_applied = True
+                state.objective.oversampler_type = "smoteenn"
+                system_notes.append("SMOTEENN hybrid balancing has been queued for the Model Selection phase.")
+                generated_code = None
+            elif "smote" in note_lower:
+                state.smote_applied = True
+                state.objective.oversampler_type = "smote"
+                system_notes.append("SMOTE class balancing has been queued for the Model Selection phase.")
+                generated_code = None  # Bypass AI execution for native features
+                
+            if "isolation forest" in note_lower or "outlier" in note_lower:
+                state.objective.outlier_removal = "isolation_forest"
+                system_notes.append("Isolation Forest outlier removal queued for training data.")
+                generated_code = None
+                
+            if "quantile" in note_lower:
+                state.objective.numeric_scaler = "quantile"
+                system_notes.append("Numeric scaling set to QuantileTransformer (uniform).")
+                generated_code = None
+            elif "power" in note_lower or "yeo-johnson" in note_lower:
+                state.objective.numeric_scaler = "power"
+                system_notes.append("Numeric scaling set to PowerTransformer (Yeo-Johnson).")
+                generated_code = None
+            elif "robust scaler" in note_lower or "robust scale" in note_lower:
+                state.objective.numeric_scaler = "robust"
+                system_notes.append("Numeric scaling set to RobustScaler.")
+                generated_code = None
+            elif "minmax scaler" in note_lower or "minmax scale" in note_lower or "min-max" in note_lower:
+                state.objective.numeric_scaler = "minmax"
+                system_notes.append("Numeric scaling set to MinMaxScaler.")
+                generated_code = None
+            elif "standard scaler" in note_lower or "standard scale" in note_lower:
+                state.objective.numeric_scaler = "standard"
+                system_notes.append("Numeric scaling set to StandardScaler.")
+                generated_code = None
+                
+            if pending_card and pending_card.stage == "feature_engineering":
+                if "pca" in note_lower:
+                    state.objective.feature_optimization = "pca"
+                    system_notes.append("Feature optimization set to PCA dimensionality reduction.")
+                    generated_code = None
+                elif "polynomial" in note_lower:
+                    state.objective.feature_optimization = "polynomial"
+                    system_notes.append("Feature optimization set to Polynomial Features.")
+                    generated_code = None
+                elif "tree" in note_lower:
+                    state.objective.feature_optimization = "tree"
+                    system_notes.append("Feature optimization set to Tree-based pruning.")
+                    generated_code = None
+                    
+            if pending_card and pending_card.stage == "model_selection":
+                if "select " in note_lower and " instead" in note_lower:
+                    start_idx = note_lower.find("select ") + 7
+                    end_idx = note_lower.find(" instead")
+                    model_target = note_lower[start_idx:end_idx].strip()
+                    
+                    found = False
+                    for model_entry in state.model_leaderboard:
+                        if model_entry.model_name.lower() == model_target:
+                            model_entry.is_selected = True
+                            state.selected_model_name = model_entry.model_name
+                            found = True
+                        else:
+                            model_entry.is_selected = False
+                            
+                    if found:
+                        system_notes.append(f"Model selection explicitly overridden to: {state.selected_model_name}.")
+            log_stage = pending_card.stage if pending_card else state.current_stage
+            
+            async def _instant_log(step_name: str, details: str):
+                state.log_step(log_stage, step_name, details)
+                await save_state(state)
+                await ws_manager.broadcast(run_id, state.model_dump(mode="json"))
+
+            for note in system_notes:
+                await _instant_log("Native Feature Queued", note)
+                
+            # Execute generated code if present
+
+            if generated_code and generated_code.strip() != "null":
+                import sys
+                import subprocess
+                import os
+                import tempfile
+                from backend.agents.orchestrator import fix_generated_code
+                await _instant_log("AI Code Execution Initiated", "Attempting to run dynamically generated Python script for alternative suggestion.")
+                
+                max_retries = 5
+                current_code = generated_code
+                timeout_count = 0
+                
+                for attempt in range(max_retries):
+                    try:
+                        # Create a robust wrapper script
+                        script_content = f'''import sys
+import pandas as pd
+import numpy as np
+
+{current_code}
+
+if __name__ == "__main__":
+    try:
+        df = pd.read_csv(sys.argv[1])
+        if "apply_transformation" in locals():
+            df_transformed = apply_transformation(df)
+            df_transformed.to_csv(sys.argv[2], index=False)
+        else:
+            print("Failed to execute custom code: function 'apply_transformation' not found in generated code.", file=sys.stderr)
+            sys.exit(1)
+    except Exception as e:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
+'''
+                        # Write to temp file
+                        fd, temp_script_path = tempfile.mkstemp(suffix=".py")
+                        os.close(fd)
+                        with open(temp_script_path, "w", encoding="utf-8") as f:
+                            f.write(script_content)
+                            
+                        new_path = state.dataset_path.replace(".csv", "_custom_transformed.csv")
+                        
+                        # Execute in subprocess with 150-second timeout
+                        result = subprocess.run(
+                            [sys.executable, temp_script_path, state.dataset_path, new_path],
+                            capture_output=True,
+                            text=True,
+                            timeout=150
+                        )
+                        
+                        os.remove(temp_script_path)
+                        
+                        if result.returncode == 0:
+                            # Success!
+                            import pandas as pd
+                            df_transformed = pd.read_csv(new_path)
+                            state.dataset_path = new_path
+                            if state.feature_log and state.feature_log.final_feature_set:
+                                target = state.objective.target_column
+                                state.feature_log.final_feature_set = [c for c in df_transformed.columns if c != target]
+                                
+                            msg = f"Successfully generated and executed custom Python code to apply the requested transformation (Attempt {attempt + 1})."
+                            system_notes.append(msg)
+                            await _instant_log("Custom Transformation Succeeded", msg)
+                            break  # Success, exit the retry loop
+                        else:
+                            # Subprocess failed
+                            err_msg = result.stderr.strip()
+                            if "ModuleNotFoundError" in err_msg or "ImportError" in err_msg:
+                                # Try auto-healing dependencies first
+                                lines = err_msg.splitlines()
+                                missing_module = None
+                                for line in reversed(lines):
+                                    if "No module named" in line:
+                                        missing_module = line.split("'")[1]
+                                        break
+                                if missing_module and attempt < max_retries - 1:
+                                    install_msg = f"Auto-installing missing dependency '{missing_module}'..."
+                                    system_notes.append(install_msg)
+                                    await _instant_log("Auto-Healing Triggered", install_msg)
+                                    try:
+                                        subprocess.check_call([sys.executable, "-m", "pip", "install", missing_module], timeout=120)
+                                        success_msg = f"Successfully installed '{missing_module}'. Retrying execution..."
+                                        system_notes.append(success_msg)
+                                        await _instant_log("Dependency Installed", success_msg)
+                                        continue  # Retry execution with same code
+                                    except Exception:
+                                        err_msg += f"\nFailed to install {missing_module}."
+                            
+                            err_msg = f"Attempted to execute custom data transformation, but encountered an error:\n{err_msg}"
+                            system_notes.append(f"Attempt {attempt + 1} failed.")
+                            await _instant_log(f"Execution Failed (Attempt {attempt + 1})", err_msg)
+                            timeout_count = 0  # reset consecutive timeouts
+                            
+                            if attempt < max_retries - 1:
+                                await _instant_log("AI Self-Correction", "Requesting AI to fix the code based on the error.")
+                                fixed_code = fix_generated_code(current_code, err_msg, context_msg=request.note or "")
+                                if fixed_code:
+                                    current_code = fixed_code
+                                else:
+                                    execution_failed_fatally = True
+                                    break
+                            else:
+                                execution_failed_fatally = True
+                                
+                    except subprocess.TimeoutExpired:
+                        err_msg = "Code execution timed out after 150 seconds (possible endless loop)."
+                        system_notes.append(f"Attempt {attempt + 1} failed: {err_msg}")
+                        await _instant_log(f"Execution Timeout (Attempt {attempt + 1})", err_msg)
+                        try:
+                            os.remove(temp_script_path)
+                        except:
+                            pass
+                            
+                        timeout_count += 1
+                        if timeout_count >= 3:
+                            await _instant_log("Execution Aborted", "Consecutive timeout limit reached. Aborting AI code generation.")
+                            execution_failed_fatally = True
+                            break
+                            
+                        if attempt < max_retries - 1:
+                            await _instant_log("AI Self-Correction", "Requesting AI to fix the code based on the timeout error with full context.")
+                            fixed_code = fix_generated_code(current_code, err_msg, context_msg=request.note or "")
+                            if fixed_code:
+                                current_code = fixed_code
+                            else:
+                                execution_failed_fatally = True
+                                break
+                        else:
+                            execution_failed_fatally = True
+                    except Exception as e:
+                        err_msg = f"Attempted to execute custom data transformation, but encountered a system error: {e}"
+                        system_notes.append(err_msg)
+                        await _instant_log("Execution Failed", err_msg)
+                        execution_failed_fatally = True
+                        break
+                        
+            if execution_failed_fatally:
+                fail_msg = "Dynamic code execution failed after maximum retries. Remaining at the current decision card."
+                system_notes.append(fail_msg)
+                await _instant_log("Execution Aborted", fail_msg)
+                agent_justification = "Failed to execute your suggestion. " + fail_msg
+            
+            if system_notes:
+                agent_justification += "\n\nSystem Notes:\n- " + "\n- ".join(system_notes)
 
     # Update the last decision log entry with the user's choice
     if state.decisions_log:
@@ -319,15 +552,18 @@ async def submit_decision(run_id: str, request: DecisionRequest):
             last_entry.agent_justification = agent_justification
             last_entry.decided_at = datetime.utcnow()
 
-    if action in (UserAction.APPROVE, UserAction.COUNTER_PROPOSE):
-        state.clear_checkpoint()
-        if pending_card:
-            state.mark_stage(pending_card.stage, StageStatus.APPROVED)
-    elif action == UserAction.REJECT:
-        state.is_paused = False  # Unblock but mark rejected
-        if pending_card:
-            state.mark_stage(pending_card.stage, StageStatus.REJECTED)
-        state.pending_approval = None
+    if not execution_failed_fatally:
+        if action == UserAction.APPROVE:
+            state.clear_checkpoint()
+            if pending_card:
+                state.mark_stage(pending_card.stage, StageStatus.APPROVED)
+                if pending_card.stage == "reporting":
+                    state.current_stage = "completed"
+        elif action == UserAction.REJECT:
+            state.is_paused = False  # Unblock but mark rejected
+            if pending_card:
+                state.mark_stage(pending_card.stage, StageStatus.REJECTED)
+            state.pending_approval = None
 
     await save_state(state)
 
@@ -342,18 +578,31 @@ async def submit_decision(run_id: str, request: DecisionRequest):
     }
 
 
-def _get_agent_justification(state: PipelineState, user_note: str) -> str:
-    """Ask the Orchestrator agent for a structured pros/cons on the counter-proposal."""
+from typing import Tuple
+
+def _get_agent_justification(state: PipelineState, user_note: str) -> Tuple[str, str]:
+    """Ask the Orchestrator agent for a structured pros/cons and potential code on the counter-proposal."""
     try:
         from backend.agents.orchestrator import handle_counter_propose
         result = handle_counter_propose(state, user_note)
-        return (
-            f"Recommendation: {result.get('recommendation', 'N/A')}. "
-            f"Reasoning: {result.get('recommendation_reasoning', '')}. "
-            f"Pros of agent choice: {'; '.join(result.get('pros_of_agent_choice', [])[:2])}."
+        
+        flaws = result.get('flaws_and_drawbacks_of_user_suggestion', [])
+        benefits = result.get('benefits_of_user_suggestion', [])
+        
+        flaws_text = "\n".join([f"  • {f}" for f in flaws]) if flaws else "  • None identified."
+        benefits_text = "\n".join([f"  • {b}" for b in benefits]) if benefits else "  • None identified."
+        
+        justification_str = (
+            f"User Suggestion Interpretation: {result.get('user_suggestion_interpretation', 'N/A')}\n\n"
+            f"⚠️ Flaws/Risks of your suggestion:\n{flaws_text}\n\n"
+            f"✅ Benefits of your suggestion:\n{benefits_text}\n\n"
+            f"AI Conclusion: {result.get('recommendation_reasoning', 'Executing as requested.')}"
         )
-    except Exception:
-        return "Agent justification could not be generated."
+        
+        code_str = result.get('generated_code', None)
+        return justification_str, code_str
+    except Exception as e:
+        return f"Agent justification could not be generated: {e}", None
 
 
 # ---------------------------------------------------------------------------

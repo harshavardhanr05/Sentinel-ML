@@ -27,6 +27,7 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 warnings.filterwarnings("ignore")
 
 from backend.state.schema import PipelineState, TaskType
+from backend.state.store import log_step_and_broadcast_sync
 
 # Sample size for timing estimate
 COST_SAMPLE_SIZE = 500
@@ -38,6 +39,7 @@ def run_cost_awareness(state: PipelineState) -> PipelineState:
     Estimate compute cost for each candidate model family before full tuning.
     Populates state.cost_estimates with per-model timing estimates.
     """
+    log_step_and_broadcast_sync(state, "cost_awareness", "Cost Estimation Started", "Profiling model training times on a data sample to project full tuning costs.")
     import os
     from backend.agents.data_profiling import _load_dataset
 
@@ -97,6 +99,8 @@ def run_cost_awareness(state: PipelineState) -> PipelineState:
             estimates[name] = {"error": str(e)}
 
     state.cost_estimates = estimates
+    
+    log_step_and_broadcast_sync(state, "cost_awareness", "Cost Estimation Complete", f"Estimated training time for {len(estimates)} model families based on N={OPTUNA_TRIALS_ESTIMATE} Optuna trials.")
     return state
 
 

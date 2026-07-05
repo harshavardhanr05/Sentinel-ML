@@ -46,6 +46,7 @@ from backend.state.schema import (
     StabilityMetrics,
     TaskType,
 )
+from backend.state.store import log_step_and_broadcast_sync
 
 # ---------------------------------------------------------------------------
 # Default thresholds (overridden by compliance YAML injections)
@@ -206,6 +207,7 @@ def run_governance(state: PipelineState) -> PipelineState:
     failures = []
 
     # ── Fairness Audit ────────────────────────────────────────────────
+    log_step_and_broadcast_sync(state, "governance", "Fairness Audit Started", f"Checking Disparate Impact and Equal Opportunity Difference against thresholds (DI>={di_min}, EOD<={eod_max})")
     fairness = _run_fairness_audit(
         model, df, X_test_raw, X_test, y_test, target_col,
         protected_attrs, di_min, eod_max, task_type
@@ -298,12 +300,10 @@ def run_governance(state: PipelineState) -> PipelineState:
     )
     state.governance_audit.governance_loop_history.append(loop_record)
 
-    # Log step
-    metric_name = "R2" if task_type in ("regression", TaskType.REGRESSION) else "AUC"
-    state.log_step("governance", f"Loop {loop_number} — {overall_result}",
-        f"Disparate Impact: {fairness.disparate_impact}, EOD: {fairness.equal_opportunity_difference}, "
-        f"{metric_name} Degradation: {robustness.auc_degradation_pct}%, Bootstrap Var: {stability.metric_variance}. "
-        f"Corrective action: {corrective}")
+    log_step_and_broadcast_sync(
+        state, "governance", "Governance Audit Complete",
+        f"Loop {loop_number} Result: {overall_result}. AI Narrative: {llm_narrative}"
+    )
 
     return state
 

@@ -36,7 +36,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   const total = data.total as number | undefined
 
   return (
-    <div className="bg-surface-800/98 backdrop-blur-lg border border-surface-500/50 shadow-2xl p-4 rounded-xl min-w-[200px] z-50">
+    <div className="bg-surface-800 backdrop-blur-lg border border-surface-500/50 shadow-2xl p-4 rounded-xl min-w-[200px] z-50">
       <div className="text-sm font-bold text-slate-100 border-b border-surface-600 pb-2 mb-3">
         {label ?? data.name ?? data.category ?? '—'}
       </div>
@@ -69,7 +69,7 @@ const HistogramTooltip = ({ active, payload }: any) => {
   if (!active || !payload?.length) return null
   const d = payload[0].payload
   return (
-    <div className="bg-surface-800/98 border border-surface-500/50 shadow-2xl p-3 rounded-xl text-sm z-50">
+    <div className="bg-surface-800 border border-surface-500/50 shadow-2xl p-3 rounded-xl text-sm z-50">
       <div className="text-slate-400 mb-1">Range</div>
       <div className="text-slate-100 font-bold">{d.rangeLabel}</div>
       <div className="mt-2 text-slate-400">Count</div>

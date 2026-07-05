@@ -90,7 +90,11 @@ export default function DecisionCard({ runId, card, onDecisionMade }: Props) {
               <div key={key} className="bg-surface-700/50 rounded-lg p-2.5 border border-surface-600/30">
                 <div className="text-xs text-slate-500 mb-1">{key.replace(/_/g, ' ')}</div>
                 <div className="text-sm font-semibold text-slate-200">
-                  {typeof val === 'number' ? val.toFixed(3) : String(val ?? 'N/A')}
+                  {typeof val === 'number' 
+                    ? val.toFixed(3) 
+                    : typeof val === 'object' && val !== null 
+                      ? Object.entries(val).map(([k, v]) => `${k}: ${v}`).join(', ')
+                      : String(val ?? 'N/A')}
                 </div>
               </div>
             ))}
@@ -165,17 +169,35 @@ export default function DecisionCard({ runId, card, onDecisionMade }: Props) {
         </div>
       )}
 
-      {/* Agent justification response (after counter-propose) */}
-      {agentResponse && (
-        <div className="bg-brand-900/30 border border-brand-800/50 rounded-xl p-4 mb-4">
-          <div className="text-xs text-brand-400 font-medium uppercase tracking-wide mb-2">Agent Response to Your Suggestion</div>
-          <p className="text-sm text-slate-300 leading-relaxed">{agentResponse}</p>
-        </div>
-      )}
+      {/* Agent justification response removed as it's shown in Audit Trail */}
 
       {/* Counter-propose form */}
       {showCounterForm && (
-        <div className="mb-4 space-y-3">
+        <div className="mb-4 space-y-3 animate-slide-up">
+          <div className="bg-surface-800/50 rounded-lg p-3 border border-surface-700/50">
+            <div className="text-xs font-semibold text-slate-300 mb-2 flex items-center gap-1.5">
+              <Zap size={12} className="text-amber-400" />
+              Instant Native Features Catalog
+            </div>
+            <div className="grid grid-cols-1 gap-2 text-[11px] text-slate-400">
+              <div className="flex gap-2">
+                <span className="text-brand-300 font-mono w-24 shrink-0">smote, smotetomek, smoteenn</span>
+                <span>Advanced class imbalance handling (oversampling/hybrid).</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="text-brand-300 font-mono w-24 shrink-0">quantile, power, robust scaler</span>
+                <span>Advanced numerical scaling and variance stabilization.</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="text-brand-300 font-mono w-24 shrink-0">pca, polynomial</span>
+                <span>Dimensionality reduction and feature interactions.</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="text-brand-300 font-mono w-24 shrink-0">isolation forest</span>
+                <span>Automatic robust outlier removal on training data.</span>
+              </div>
+            </div>
+          </div>
           <textarea
             value={counterNote}
             onChange={e => setCounterNote(e.target.value)}
