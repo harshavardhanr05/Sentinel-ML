@@ -84,6 +84,10 @@ class ObjectiveState(BaseModel):
         default_factory=list,
         description="Columns declared or inferred as fairness-sensitive (e.g. gender, age_bucket)",
     )
+    protected_attribute_reasoning: Dict[str, str] = Field(
+        default_factory=dict,
+        description="{col_name: 'why it is considered a protected/sensitive attribute'}",
+    )
     domain_tag: str = Field(
         default="generic",
         description="Domain for compliance YAML lookup: finance, healthcare, generic, etc.",
@@ -97,7 +101,10 @@ class ObjectiveState(BaseModel):
         description="List of fields the user needs to clarify",
     )
     feature_selection_top_k: Optional[int] = None
-
+    feature_optimization: str = Field(
+        default="none",
+        description="Advanced feature optimization: 'none', 'pca', or 'tree'",
+    )
 
 class ColumnProfile(BaseModel):
     name: str
@@ -154,6 +161,14 @@ class FeatureLogEntry(BaseModel):
         default=False,
         description="True if the Governance mid-stage consult flagged this as a fairness proxy",
     )
+    imputation_strategy: Optional[str] = Field(
+        default=None,
+        description="AI-recommended imputation: 'mean', 'median', 'zero', 'unknown'",
+    )
+    encoding_strategy: Optional[str] = Field(
+        default=None,
+        description="AI-recommended encoding: 'one_hot', 'target_encoding', 'ordinal'",
+    )
 
 
 class FeatureLog(BaseModel):
@@ -180,6 +195,13 @@ class ModelLeaderboardEntry(BaseModel):
     precision: Optional[float] = None
     recall: Optional[float] = None
     accuracy: Optional[float] = None
+    rmse: Optional[float] = None
+    mae: Optional[float] = None
+
+    train_auc_roc: Optional[float] = None
+    train_f1_score: Optional[float] = None
+    train_rmse: Optional[float] = None
+    train_mae: Optional[float] = None
     calibration_curve: List[CalibrationPoint] = Field(default_factory=list)
     cost_estimate_seconds: Optional[float] = Field(
         default=None, description="Estimated wall-clock for full tuning run"
@@ -187,6 +209,7 @@ class ModelLeaderboardEntry(BaseModel):
     cost_estimate_note: Optional[str] = None
     is_selected: bool = False
     explainability_summary: Optional[str] = None
+    features_used: List[str] = Field(default_factory=list, description="List of feature names used to train this model")
 
 
 class FairnessMetrics(BaseModel):
@@ -212,6 +235,35 @@ class StabilityMetrics(BaseModel):
     metric_std: Optional[float] = None
     metric_mean: Optional[float] = None
     status: AuditStatus = AuditStatus.NOT_RUN
+
+
+class GovernanceLoopRecord(BaseModel):
+    """Snapshot of one governance iteration — appended each loop."""
+
+    loop_number: int
+    overall_result: str  # 'PASS' or 'FAIL'
+    auc_roc: Optional[float] = None
+    f1_score: Optional[float] = None
+    rmse: Optional[float] = None
+    mae: Optional[float] = None
+    disparate_impact: Optional[float] = None
+    equal_opportunity_difference: Optional[float] = None
+    auc_degradation_pct: Optional[float] = None
+    bootstrap_variance: Optional[float] = None
+    failure_reasons: List[str] = Field(default_factory=list)
+    corrective_action: Optional[str] = None  # loopback target
+    llm_narrative: Optional[str] = None  # LLM-generated explanation
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class AgentStepEntry(BaseModel):
+    """Lightweight step log — one entry per meaningful agent action (not a checkpoint)."""
+
+    entry_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    stage: str
+    step_name: str
+    details: str
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
 class GovernanceAudit(BaseModel):
@@ -241,6 +293,10 @@ class GovernanceAudit(BaseModel):
         default=0,
         description="How many governance loops have been attempted on this run",
     )
+    governance_loop_history: List[GovernanceLoopRecord] = Field(
+        default_factory=list,
+        description="Per-loop audit records with metrics and LLM narrative",
+    )
 
 
 class ExplainabilityOutput(BaseModel):
@@ -265,6 +321,8 @@ class DecisionLogEntry(BaseModel):
 
     entry_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     stage: str
+    problem_context: Optional[str] = None
+    action_taken: Optional[str] = None
     proposed_action: str
     reasoning: str
     alternatives_considered: List[str] = Field(default_factory=list)
@@ -282,6 +340,8 @@ class DecisionCard(BaseModel):
     """Payload placed in pending_approval when a checkpoint fires."""
 
     stage: str
+    problem_context: Optional[str] = None
+    action_taken: Optional[str] = None
     proposed_action: str
     reasoning: str
     alternatives_considered: List[str] = Field(default_factory=list)
@@ -351,9 +411,17 @@ class PipelineState(BaseModel):
 
     # Audit trail (append-only within a run)
     decisions_log: List[DecisionLogEntry] = Field(default_factory=list)
+    agent_step_log: List[AgentStepEntry] = Field(
+        default_factory=list,
+        description="Verbose step-by-step agent activity log (non-checkpoint)",
+    )
 
     # Cost estimates (from Cost Awareness Agent)
     cost_estimates: Dict[str, Any] = Field(default_factory=dict)
+
+    # SMOTE tracking
+    smote_applied: bool = False
+    smote_class_distributions: Dict[str, Dict[str, int]] = Field(default_factory=dict)
 
     # Final output
     model_card_path: Optional[str] = None
@@ -376,6 +444,15 @@ class PipelineState(BaseModel):
     def append_decision(self, entry: DecisionLogEntry) -> None:
         """Append-only write to decisions_log (NFR-4: immutable audit trail)."""
         self.decisions_log.append(entry)
+        self.updated_at = datetime.utcnow()
+
+    def log_step(self, stage: str, step_name: str, details: str) -> None:
+        """Append a lightweight agent step to agent_step_log."""
+        self.agent_step_log.append(AgentStepEntry(
+            stage=stage,
+            step_name=step_name,
+            details=details,
+        ))
         self.updated_at = datetime.utcnow()
 
     def set_checkpoint(self, card: DecisionCard) -> None:

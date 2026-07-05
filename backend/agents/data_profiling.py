@@ -19,17 +19,51 @@ Unit-testable with hand-crafted DataFrames.
 from __future__ import annotations
 
 import os
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
+from backend.llm.client import get_llm_json
 from backend.state.schema import (
     ColumnProfile,
     DataHealthReport,
     PipelineState,
     TaskType,
 )
+
+# ---------------------------------------------------------------------------
+# Prompt Templates
+# ---------------------------------------------------------------------------
+
+_DASHBOARD_CHART_PROMPT = """
+You are an expert Data Visualizer. Given the dataset schema, objective, and correlation/distribution metrics, suggest 3-5 specific charts that would be most insightful for a user to see in their analytics dashboard.
+
+CRITICAL: Do NOT output repetitive charts. Every chart MUST use different combinations of dataKeyX and dataKeyY and provide a UNIQUE insight. Do not suggest two charts with the exact same variables (e.g., do not suggest two line charts with the same X and Y).
+
+Dataset Columns: {columns}
+Objective Task: {task_type}
+Target Column: {target_column}
+
+Correlations with Target:
+{correlations}
+
+Produce a JSON array of chart objects, each following this exact schema:
+{{
+  "charts": [
+    {{
+      "id": "unique-string",
+      "title": "Short title",
+      "type": "bar" | "line" | "scatter" | "pie",
+      "dataKeyX": "column name for X axis",
+      "dataKeyY": "column name for Y axis (optional)",
+      "insight": "Short plain-language explanation of why this chart is interesting."
+    }}
+  ]
+}}
+Return ONLY JSON.
+"""
 
 # ---------------------------------------------------------------------------
 # Thresholds (configurable constants)
@@ -109,6 +143,11 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
         "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
         "shape": [len(df), len(df.columns)],
     }
+    state.log_step("data_profiling", "Dataset loaded",
+        f"{len(df)} rows x {len(df.columns)} columns. "
+        f"Missingness flags: {len(missingness_flags)} columns. "
+        f"Leakage flags: {len(leakage_flags)}. "
+        f"Class imbalance: {imbalance_flag} (ratio={imbalance_ratio}).")
 
     # ── Feature Correlations & Distributions (for Data Analysis Dashboard) ──
     analysis_metrics = {
@@ -119,8 +158,9 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
     
     try:
         if target_col and target_col in df.columns:
-            # Target Distribution
-            analysis_metrics["target_distribution"] = df[target_col].value_counts(normalize=True).to_dict()
+            # Target Distribution (Counts)
+            t_counts = df[target_col].value_counts().to_dict()
+            analysis_metrics["target_distribution"] = {str(k): int(v) for k, v in t_counts.items()}
             
             # Numeric correlations with target (if target is binary/numeric)
             # Convert target to numeric temporarily if it's binary string
@@ -139,18 +179,64 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
                         if not pd.isna(corr):
                             analysis_metrics["numeric_correlations"][c] = round(float(corr), 3)
 
-        # Categorical distributions
+        # Categorical distributions (Counts)
         cat_cols = df.select_dtypes(include=["object", "category"]).columns
         for c in cat_cols:
             if c != target_col:
-                val_counts = df[c].value_counts(normalize=True).head(5).to_dict()
-                analysis_metrics["categorical_distributions"][c] = val_counts
-                
+                val_counts = df[c].value_counts().head(10).to_dict()
+                analysis_metrics["categorical_distributions"][c] = {str(k): int(v) for k, v in val_counts.items()}
+
+        # Numeric histograms (binned counts for histogram visualization)
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        analysis_metrics["numeric_histograms"] = {}
+        for c in numeric_cols:
+            if c != target_col and df[c].notna().sum() > 5:
+                try:
+                    counts, bin_edges = np.histogram(df[c].dropna(), bins=20)
+                    analysis_metrics["numeric_histograms"][c] = {
+                        "counts": [int(x) for x in counts],
+                        "bins": [round(float(x), 3) for x in bin_edges],
+                    }
+                except Exception:
+                    pass
+
     except Exception as e:
         # Failsafe so pipeline doesn't crash if stats fail
-        analysis_metrics["error"] = str(e)
-        
+        pass
+
+    # ── AI Dashboard Selection ──
+    ai_charts = []
+    try:
+        # Build a richer context for the AI: column types, distributions, correlations
+        col_info = {}
+        for col in df.columns:
+            if col == target_col:
+                continue
+            is_cat = str(df[col].dtype) in ["object", "category"] or df[col].nunique() < 15
+            col_info[col] = {
+                "type": "categorical" if is_cat else "numeric",
+                "unique": int(df[col].nunique()),
+                "correlation_with_target": analysis_metrics["numeric_correlations"].get(col),
+            }
+
+        if target_col:
+            prompt = _DASHBOARD_CHART_PROMPT.format(
+                columns=json.dumps(list(df.columns)),
+                task_type=state.objective.task_type.value,
+                target_column=target_col,
+                correlations=json.dumps(analysis_metrics["numeric_correlations"], indent=2)
+            )
+            res = get_llm_json(prompt)
+            ai_charts = res.get("charts", [])
+            state.log_step("data_profiling", "AI chart selection",
+                f"AI recommended {len(ai_charts)} charts for the analytics dashboard.")
+    except Exception:
+        pass
+
+    analysis_metrics["ai_charts"] = ai_charts
     state.data_analysis_metrics = analysis_metrics
+    # Also keep in data_schema for backward compat
+    state.data_schema["analysis_metrics"] = analysis_metrics
 
     return state
 

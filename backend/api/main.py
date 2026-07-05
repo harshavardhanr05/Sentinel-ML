@@ -225,6 +225,15 @@ async def get_run_state(run_id: str):
     return state.model_dump(mode="json")
 
 
+@app.post("/runs/{run_id}/broadcast")
+async def broadcast_state(run_id: str):
+    """Trigger an immediate WebSocket broadcast of the current state."""
+    state = await load_state(run_id)
+    if state:
+        await ws_manager.broadcast(run_id, state.model_dump(mode="json"))
+    return {"status": "broadcasted"}
+
+
 # ---------------------------------------------------------------------------
 # POST /runs/{run_id}/decision — submit a checkpoint decision
 # ---------------------------------------------------------------------------
@@ -297,6 +306,9 @@ async def submit_decision(run_id: str, request: DecisionRequest):
         else:
             # Get agent's pros/cons justification before proceeding for other stages
             agent_justification = _get_agent_justification(state, request.note)
+            if request.note and "smote" in request.note.lower():
+                state.smote_applied = True
+                agent_justification += "\n\nSystem Note: SMOTE class balancing has been queued for the Model Selection phase."
 
     # Update the last decision log entry with the user's choice
     if state.decisions_log:

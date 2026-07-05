@@ -61,18 +61,20 @@ def run_explainability(state: PipelineState) -> PipelineState:
     if not target_col or target_col not in df.columns:
         return state
 
-    X, y, feature_names = _prepare_data(df, target_col, final_features)
-    if X is None:
+    from backend.agents.model_selection import _prepare_data
+    X_train, X_val, y_train, y_val, feature_names = _prepare_data(df, target_col, final_features, state)
+    if X_train is None:
         return state
 
-    model = _get_model(state, X, y)
+    model = _get_model(state, X_train, y_train)
     if model is None:
         return state
 
     # ── Global SHAP ───────────────────────────────────────────────────
     try:
-        sample_size = min(200, len(X))
-        X_sample = X[:sample_size]
+        sample_size = min(200, len(X_val))
+        X_sample = X_val[:sample_size]
+        y_sample = y_val[:sample_size]
 
         explainer = _build_explainer(model, X_sample)
         shap_values = explainer(X_sample)
@@ -96,16 +98,36 @@ def run_explainability(state: PipelineState) -> PipelineState:
         top_5 = list(global_shap_sorted.keys())[:5]
 
         # ── Local examples ─────────────────────────────────────────────
-        local_examples = _build_local_examples(model, X_sample, y[:sample_size], vals, feature_names)
+        local_examples = _build_local_examples(model, X_sample, y_sample, vals, feature_names)
 
         # ── Save plot ─────────────────────────────────────────────────
         plot_path = _save_shap_plot(global_shap_sorted, state.run_id)
+
+        # ── AI Narrative Generation ──────────────────────────────────────
+        llm_narrative = None
+        try:
+            from backend.llm.client import get_llm_response
+            prompt = f"""
+You are an expert Data Scientist. Review the top 5 global SHAP feature importances for a {state.objective.task_type} model.
+Target Column: '{target_col}'
+Domain: '{state.objective.domain_tag}'
+Objective: '{state.objective.raw_text}'
+
+Top Features (Feature Name: Mean |SHAP| value):
+{', '.join([f"'{f}': {global_shap_sorted[f]}" for f in top_5])}
+
+Write a short, engaging 2-3 sentence narrative explaining *why* these specific features are driving the model's predictions based on domain logic. Do not mention SHAP technically, just explain the business intuition.
+"""
+            llm_narrative = get_llm_response(prompt).strip()
+        except Exception:
+            pass
 
         state.explainability = ExplainabilityOutput(
             global_shap_values=global_shap_sorted,
             top_features_summary=top_5,
             local_examples=local_examples,
             shap_plot_path=plot_path,
+            llm_narrative=llm_narrative,
         )
 
     except Exception as e:
@@ -121,51 +143,34 @@ def run_explainability(state: PipelineState) -> PipelineState:
 # ---------------------------------------------------------------------------
 
 
-def _prepare_data(df, target_col, final_features):
-    from sklearn.preprocessing import LabelEncoder, StandardScaler
-
-    try:
-        df_clean = df.dropna(subset=[target_col]).copy()
-        feature_cols = [c for c in final_features if c in df_clean.columns] if final_features else \
-                       [c for c in df_clean.columns if c != target_col]
-        if not feature_cols:
-            return None, None, None
-
-        y = df_clean[target_col]
-        if y.dtype == object:
-            y = LabelEncoder().fit_transform(y.astype(str))
-        else:
-            y = y.values
-
-        X = df_clean[feature_cols].copy()
-        for col in X.select_dtypes(include=["object", "category"]).columns:
-            X[col] = LabelEncoder().fit_transform(X[col].astype(str))
-        X = X.fillna(0)
-        X_np = StandardScaler().fit_transform(X.values.astype(float))
-
-        return X_np, y, feature_cols
-    except Exception:
-        return None, None, None
-
-
-def _get_model(state, X, y):
+def _get_model(state, X_train, y_train):
     """Retrain the selected model for SHAP analysis."""
     try:
         selected = state.selected_model_name or ""
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.model_selection import train_test_split
-
-        X_train, _, y_train, _ = train_test_split(X, y, test_size=0.25, random_state=42)
-
+        task_type = getattr(state.objective.task_type, "value", str(state.objective.task_type)).lower()
+        is_regression = task_type == "regression"
+        
         if "XGBoost" in selected:
             import xgboost as xgb
-            model = xgb.XGBClassifier(n_estimators=100, verbosity=0, random_state=42,
-                                       eval_metric="logloss", use_label_encoder=False)
+            if is_regression:
+                model = xgb.XGBRegressor(n_estimators=100, verbosity=0, random_state=42)
+            else:
+                model = xgb.XGBClassifier(n_estimators=100, verbosity=0, random_state=42,
+                                           eval_metric="logloss", use_label_encoder=False)
         elif "Random Forest" in selected or "LightGBM" in selected:
-            from sklearn.ensemble import RandomForestClassifier
-            model = RandomForestClassifier(n_estimators=100, random_state=42)
+            if is_regression:
+                from sklearn.ensemble import RandomForestRegressor
+                model = RandomForestRegressor(n_estimators=100, random_state=42)
+            else:
+                from sklearn.ensemble import RandomForestClassifier
+                model = RandomForestClassifier(n_estimators=100, random_state=42)
         else:
-            model = LogisticRegression(max_iter=500, random_state=42)
+            if is_regression:
+                from sklearn.linear_model import LinearRegression
+                model = LinearRegression()
+            else:
+                from sklearn.linear_model import LogisticRegression
+                model = LogisticRegression(max_iter=500, random_state=42)
 
         model.fit(X_train, y_train)
         return model
@@ -190,15 +195,35 @@ def _build_local_examples(model, X, y, shap_vals, feature_names):
     examples = []
     try:
         y_pred = model.predict(X)
-        correct_pos = np.where((y_pred == 1) & (y == 1))[0]
-        correct_neg = np.where((y_pred == 0) & (y == 0))[0]
-        misclassified = np.where(y_pred != y)[0]
+        
+        # Check if it's classification or regression based on predictions
+        is_classification = hasattr(model, "predict_proba") or len(np.unique(y)) <= 2
 
-        for label, candidates in [
-            ("correct_positive", correct_pos),
-            ("correct_negative", correct_neg),
-            ("misclassified", misclassified),
-        ]:
+        if is_classification:
+            # For classification, pick correctly classified positive, negative, and a misclassified
+            correct_pos = np.where((y_pred == 1) & (y == 1))[0]
+            correct_neg = np.where((y_pred == 0) & (y == 0))[0]
+            misclassified = np.where(y_pred != y)[0]
+            
+            candidates_list = [
+                ("correct_positive", correct_pos),
+                ("correct_negative", correct_neg),
+                ("misclassified", misclassified),
+            ]
+        else:
+            # For regression, pick highest predicted, lowest predicted, and largest error
+            errors = np.abs(y_pred - y)
+            highest_pred = [np.argmax(y_pred)]
+            lowest_pred = [np.argmin(y_pred)]
+            largest_error = [np.argmax(errors)]
+            
+            candidates_list = [
+                ("highest_prediction", highest_pred),
+                ("lowest_prediction", lowest_pred),
+                ("largest_error", largest_error),
+            ]
+
+        for label, candidates in candidates_list:
             if len(candidates) == 0:
                 continue
             idx = candidates[0]
@@ -209,8 +234,8 @@ def _build_local_examples(model, X, y, shap_vals, feature_names):
             examples.append({
                 "type": label,
                 "sample_index": int(idx),
-                "actual_label": int(y[idx]),
-                "predicted_label": int(y_pred[idx]),
+                "actual_label": float(y[idx]) if not is_classification else int(y[idx]),
+                "predicted_label": float(y_pred[idx]) if not is_classification else int(y_pred[idx]),
                 "shap_breakdown": shap_breakdown,
             })
     except Exception:

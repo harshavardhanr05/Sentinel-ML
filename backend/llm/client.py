@@ -15,6 +15,7 @@ import json
 import os
 import re
 import time
+import hashlib
 from typing import Any
 
 from dotenv import load_dotenv
@@ -59,6 +60,8 @@ def _get_gemini_client() -> Any:
 # Public API
 # ---------------------------------------------------------------------------
 
+_LLM_CACHE: dict[str, str] = {}
+
 
 def get_llm_response(
     prompt: str,
@@ -83,14 +86,24 @@ def get_llm_response(
     Raises:
         RuntimeError: If the provider is unknown or the API call fails.
     """
+    # ── AI API Limit Saver (Cache) ──
+    # Hashes the exact prompt. If we've seen it before (e.g. loops), return cached.
+    prompt_hash = hashlib.md5(prompt.encode('utf-8')).hexdigest()
+    if prompt_hash in _LLM_CACHE:
+        print(f"[Sentinel-ML] LLM Cache Hit! Skipping API request.")
+        return _LLM_CACHE[prompt_hash]
+
     if _PROVIDER == "gemini":
-        return _call_gemini(prompt, expect_json=expect_json, retry_on_json_fail=retry_on_json_fail)
+        result = _call_gemini(prompt, expect_json=expect_json, retry_on_json_fail=retry_on_json_fail)
     elif _PROVIDER == "ollama":
-        return _call_ollama(prompt, expect_json=expect_json, retry_on_json_fail=retry_on_json_fail)
+        result = _call_ollama(prompt, expect_json=expect_json, retry_on_json_fail=retry_on_json_fail)
     else:
         raise RuntimeError(
             f"Unknown LLM_PROVIDER='{_PROVIDER}'. Set LLM_PROVIDER=gemini or ollama in .env."
         )
+
+    _LLM_CACHE[prompt_hash] = result
+    return result
 
 
 def get_llm_json(prompt: str) -> dict[str, Any]:
@@ -101,6 +114,14 @@ def get_llm_json(prompt: str) -> dict[str, Any]:
     """
     raw = get_llm_response(prompt, expect_json=True)
     return _parse_json_safe(raw)
+
+
+def get_llm_text(prompt: str) -> str:
+    """
+    Convenience wrapper: calls get_llm_response and returns the raw text.
+    Use this when you need plain prose from the LLM (not JSON).
+    """
+    return get_llm_response(prompt, expect_json=False)
 
 
 # ---------------------------------------------------------------------------

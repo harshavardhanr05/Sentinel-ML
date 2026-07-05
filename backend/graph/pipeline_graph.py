@@ -37,7 +37,7 @@ from backend.state.schema import (
     StageStatus,
     UserAction,
 )
-from backend.state.store import save_state_sync
+from backend.state.store import load_state_sync, save_state_sync
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +71,10 @@ def make_checkpoint_node(stage_name: str):
 
 def node_orchestrator(state: PipelineState) -> PipelineState:
     """Parse NL objective → ObjectiveState. Set clarification flag if ambiguous."""
+    db_state = load_state_sync(state.run_id)
+    if db_state:
+        state = db_state
+
     if getattr(state.stage_statuses, "objective_intake", None) in (StageStatus.COMPLETE, StageStatus.APPROVED):
         return state
 
@@ -89,6 +93,10 @@ def node_orchestrator(state: PipelineState) -> PipelineState:
 
 def node_compliance(state: PipelineState) -> PipelineState:
     """Load domain YAML → inject thresholds into governance_audit."""
+    db_state = load_state_sync(state.run_id)
+    if db_state:
+        state = db_state
+
     if getattr(state.stage_statuses, "compliance", None) in (StageStatus.COMPLETE, StageStatus.APPROVED):
         return state
 
@@ -107,6 +115,10 @@ def node_compliance(state: PipelineState) -> PipelineState:
 
 def node_data_profiling(state: PipelineState) -> PipelineState:
     """Profile dataset → DataHealthReport. Then set checkpoint."""
+    db_state = load_state_sync(state.run_id)
+    if db_state:
+        state = db_state
+
     if getattr(state.stage_statuses, "data_profiling", None) in (StageStatus.COMPLETE, StageStatus.APPROVED):
         return state
 
@@ -128,6 +140,8 @@ def node_data_profiling(state: PipelineState) -> PipelineState:
 
         card = DecisionCard(
             stage="data_profiling",
+            problem_context=f"Data profiled. Missingness max severity: {report.severity_summary.get('missingness')}.",
+            action_taken=f"Generated {len(report.columns)} column profiles and detected data health issues.",
             proposed_action=(
                 f"Proceed to Feature Engineering with {report.row_count} rows × "
                 f"{report.column_count} columns. "
@@ -156,6 +170,8 @@ def node_data_profiling(state: PipelineState) -> PipelineState:
         # Log the proposal
         entry = DecisionLogEntry(
             stage="data_profiling",
+            problem_context=card.problem_context,
+            action_taken=card.action_taken,
             proposed_action=card.proposed_action,
             reasoning=card.reasoning,
             alternatives_considered=card.alternatives_considered,
@@ -173,6 +189,10 @@ def node_data_profiling(state: PipelineState) -> PipelineState:
 
 def node_feature_engineering(state: PipelineState) -> PipelineState:
     """Propose + test feature transformations. Consult Governance mid-stage."""
+    db_state = load_state_sync(state.run_id)
+    if db_state:
+        state = db_state
+
     if getattr(state.stage_statuses, "feature_engineering", None) in (StageStatus.COMPLETE, StageStatus.APPROVED):
         return state
 
@@ -191,6 +211,8 @@ def node_feature_engineering(state: PipelineState) -> PipelineState:
 
     card = DecisionCard(
         stage="feature_engineering",
+        problem_context=f"Raw dataset needed transformations. {rejected} features were identified as suboptimal or non-compliant.",
+        action_taken=f"Tested transformations and retained {accepted} features. Enforced any top-K constraints.",
         proposed_action=(
             f"Proceed to Model Selection with {accepted} accepted features "
             f"({rejected} rejected, {len(gov_flagged)} governance-flagged as fairness proxies)."
@@ -216,6 +238,8 @@ def node_feature_engineering(state: PipelineState) -> PipelineState:
     state.set_checkpoint(card)
     entry = DecisionLogEntry(
         stage="feature_engineering",
+        problem_context=card.problem_context,
+        action_taken=card.action_taken,
         proposed_action=card.proposed_action,
         reasoning=card.reasoning,
         alternatives_considered=card.alternatives_considered,
@@ -233,6 +257,10 @@ def node_feature_engineering(state: PipelineState) -> PipelineState:
 
 def node_model_selection(state: PipelineState) -> PipelineState:
     """Train 3+ model families, Optuna tuning, build leaderboard."""
+    db_state = load_state_sync(state.run_id)
+    if db_state:
+        state = db_state
+
     if getattr(state.stage_statuses, "model_selection", None) in (StageStatus.COMPLETE, StageStatus.APPROVED):
         return state
 
@@ -249,36 +277,46 @@ def node_model_selection(state: PipelineState) -> PipelineState:
     # Build leaderboard card
     best = next((m for m in state.model_leaderboard if m.is_selected), None)
     if best:
+        auc_val = best.auc_roc if best.auc_roc is not None else 0.0
+        f1_val = best.f1_score if best.f1_score is not None else (best.rmse if best.rmse is not None else 0.0)
         card = DecisionCard(
             stage="model_selection",
+            problem_context=f"Evaluated {len(state.model_leaderboard)} model architectures for the best trade-off between metric and cost.",
+            action_taken=f"Selected {best.model_name} as the primary candidate for deployment.",
             proposed_action=(
                 f"Selected model: {best.model_name} "
-                f"(AUC-ROC: {best.auc_roc:.3f}, F1: {best.f1_score:.3f}). "
+                f"(AUC/R2: {auc_val:.3f}, "
+                f"F1/RMSE: {f1_val:.3f}). "
                 f"Est. full tuning time: {best.cost_estimate_note or 'N/A'}. "
                 "Proceed to Governance Audit?"
             ),
             reasoning=(
                 f"{len(state.model_leaderboard)} candidate models trained. "
                 f"{best.model_name} selected based on multi-objective score "
-                f"(AUC + fairness proxy). "
+                f"(AUC/R2 + fairness proxy). "
                 f"Cost-vs-performance trade-offs have been estimated for all candidates."
             ),
             alternatives_considered=[
-                f"{m.model_name}: AUC={m.auc_roc:.3f}" if m.auc_roc else m.model_name
-                for m in state.model_leaderboard
-                if not m.is_selected
+                f"Select {m.model_name} instead (lower cost, different metric tradeoff)" 
+                for m in state.model_leaderboard if m.model_name != best.model_name
             ],
             cost_estimate=best.cost_estimate_note,
             metrics_summary={
                 "selected_model": best.model_name,
                 "auc_roc": best.auc_roc,
                 "f1_score": best.f1_score,
+                "rmse": best.rmse,
+                "mae": best.mae,
                 "candidates_compared": len(state.model_leaderboard),
+                "smote_applied": state.smote_applied,
+                "smote_class_distributions": state.smote_class_distributions,
             },
         )
         state.set_checkpoint(card)
         entry = DecisionLogEntry(
             stage="model_selection",
+            problem_context=card.problem_context,
+            action_taken=card.action_taken,
             proposed_action=card.proposed_action,
             reasoning=card.reasoning,
             alternatives_considered=card.alternatives_considered,
@@ -296,6 +334,10 @@ def node_model_selection(state: PipelineState) -> PipelineState:
 
 def node_governance(state: PipelineState) -> PipelineState:
     """Run all three audits (fairness / robustness / stability) against compliance thresholds."""
+    db_state = load_state_sync(state.run_id)
+    if db_state:
+        state = db_state
+
     if getattr(state.stage_statuses, "governance", None) in (StageStatus.COMPLETE, StageStatus.APPROVED):
         return state
 
@@ -316,6 +358,10 @@ def node_governance(state: PipelineState) -> PipelineState:
 
 def node_explainability(state: PipelineState) -> PipelineState:
     """SHAP global + local explanations for the selected model."""
+    db_state = load_state_sync(state.run_id)
+    if db_state:
+        state = db_state
+
     if getattr(state.stage_statuses, "explainability", None) in (StageStatus.COMPLETE, StageStatus.APPROVED):
         return state
 
@@ -337,6 +383,10 @@ def node_explainability(state: PipelineState) -> PipelineState:
 
 def node_reporting(state: PipelineState) -> PipelineState:
     """Generate Model Card + audit trail HTML."""
+    db_state = load_state_sync(state.run_id)
+    if db_state:
+        state = db_state
+
     if getattr(state.stage_statuses, "reporting", None) in (StageStatus.COMPLETE, StageStatus.APPROVED):
         return state
 
@@ -349,6 +399,8 @@ def node_reporting(state: PipelineState) -> PipelineState:
     rec = state.final_recommendation
     card = DecisionCard(
         stage="reporting",
+        problem_context="All stages complete. Final model requires deployment approval.",
+        action_taken=f"Generated Model Card and final recommendation: {rec}",
         proposed_action=f"Final recommendation: {rec}. Review Model Card and confirm deployment.",
         reasoning=state.final_recommendation_reasoning or "See Model Card for full reasoning.",
         alternatives_considered=["Review and override the recommendation manually"],
@@ -357,6 +409,8 @@ def node_reporting(state: PipelineState) -> PipelineState:
     state.set_checkpoint(card)
     entry = DecisionLogEntry(
         stage="reporting",
+        problem_context=card.problem_context,
+        action_taken=card.action_taken,
         proposed_action=card.proposed_action,
         reasoning=card.reasoning,
     )

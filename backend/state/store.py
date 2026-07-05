@@ -204,3 +204,14 @@ def load_state_sync(run_id: str) -> Optional[PipelineState]:
         return loop.run_until_complete(load_state(run_id))
     finally:
         loop.close()
+
+
+def log_step_and_broadcast_sync(state: PipelineState, stage: str, step_name: str, details: str) -> None:
+    """Helper to log a step, save state to DB, and trigger immediate WS broadcast."""
+    state.log_step(stage, step_name, details)
+    save_state_sync(state)
+    import requests
+    try:
+        requests.post(f"http://127.0.0.1:8000/runs/{state.run_id}/broadcast", timeout=0.5)
+    except Exception:
+        pass

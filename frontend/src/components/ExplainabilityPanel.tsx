@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
-import { Lightbulb, ChevronDown, ChevronUp } from 'lucide-react'
+import { Lightbulb, ChevronDown, ChevronUp, Bot } from 'lucide-react'
 
 interface LocalExample {
   type: string
@@ -20,13 +20,13 @@ interface Props {
   topFeatures: string[]
   localExamples: LocalExample[]
   finalFeatures?: string[]
+  llmNarrative?: string
 }
 
-export default function ExplainabilityPanel({ globalShap, topFeatures, localExamples, finalFeatures = [] }: Props) {
+export default function ExplainabilityPanel({ globalShap, topFeatures, localExamples, finalFeatures = [], llmNarrative }: Props) {
   const [expandedExample, setExpandedExample] = useState<number | null>(null)
 
   const chartData = Object.entries(globalShap)
-    .filter(([feat]) => finalFeatures.length === 0 || finalFeatures.includes(feat))
     .sort(([, a], [, b]) => b - a)
     .slice(0, 12)
     .map(([feature, val]) => ({ feature, importance: val }))
@@ -43,6 +43,16 @@ export default function ExplainabilityPanel({ globalShap, topFeatures, localExam
         <Lightbulb size={18} className="text-yellow-400" />
         <h3 className="section-title mb-0">Explainability (SHAP)</h3>
       </div>
+
+      {/* AI Narrative (if available) */}
+      {llmNarrative && (
+        <div className="mb-6 p-4 rounded-xl border border-brand-800/40 bg-brand-950/20 text-brand-100/90 text-sm leading-relaxed shadow-sm">
+          <div className="flex items-center gap-2 mb-2 font-semibold text-brand-300">
+            <Bot size={16} /> AI Explanation
+          </div>
+          {llmNarrative}
+        </div>
+      )}
 
       {/* Top features summary */}
       {topFeatures.length > 0 && (

@@ -82,15 +82,54 @@ export default function DecisionCard({ runId, card, onDecisionMade }: Props) {
 
       {/* Metrics summary */}
       {Object.keys(card.metrics_summary).length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
-          {Object.entries(card.metrics_summary).slice(0, 6).map(([key, val]) => (
-            <div key={key} className="bg-surface-700/50 rounded-lg p-2.5 border border-surface-600/30">
-              <div className="text-xs text-slate-500 mb-1">{key.replace(/_/g, ' ')}</div>
-              <div className="text-sm font-semibold text-slate-200">
-                {typeof val === 'number' ? val.toFixed(3) : String(val ?? 'N/A')}
+        <div className="mb-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {Object.entries(card.metrics_summary)
+              .filter(([key]) => key !== 'smote_class_distributions')
+              .slice(0, 6).map(([key, val]) => (
+              <div key={key} className="bg-surface-700/50 rounded-lg p-2.5 border border-surface-600/30">
+                <div className="text-xs text-slate-500 mb-1">{key.replace(/_/g, ' ')}</div>
+                <div className="text-sm font-semibold text-slate-200">
+                  {typeof val === 'number' ? val.toFixed(3) : String(val ?? 'N/A')}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* SMOTE Distributions Visualization */}
+          {Boolean(card.metrics_summary.smote_class_distributions) && typeof card.metrics_summary.smote_class_distributions === 'object' && (
+            <div className="bg-surface-800/80 rounded-xl p-4 border border-surface-600/50 mt-4 shadow-inner">
+              <h4 className="text-xs font-semibold uppercase text-brand-300 mb-3 flex items-center gap-2">
+                Class Balance (SMOTE)
+              </h4>
+              <div className="flex flex-col md:flex-row gap-4">
+                {['before', 'after'].map((stage) => {
+                  const dist = (card.metrics_summary.smote_class_distributions as any)[stage]
+                  if (!dist) return null
+                  const maxCount = Math.max(...(Object.values(dist) as number[]))
+                  return (
+                    <div key={stage} className="flex-1 bg-surface-900/50 p-3 rounded-lg border border-surface-700/50">
+                      <div className="text-xs font-medium text-slate-400 capitalize mb-2">{stage} SMOTE</div>
+                      <div className="space-y-2">
+                        {Object.entries(dist).map(([cls, count]) => (
+                          <div key={cls} className="flex items-center gap-2">
+                            <span className="text-xs font-mono w-16 truncate text-slate-300" title={cls}>{cls}</span>
+                            <div className="flex-1 h-2 bg-surface-700 rounded-full overflow-hidden">
+                              <div 
+                                className={`h-full ${stage === 'before' ? 'bg-amber-500' : 'bg-emerald-500'}`} 
+                                style={{ width: `${Math.max(((count as number) / maxCount) * 100, 2)}%` }}
+                              />
+                            </div>
+                            <span className="text-xs font-mono text-slate-400 w-10 text-right">{count as number}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             </div>
-          ))}
+          )}
         </div>
       )}
 
@@ -108,7 +147,17 @@ export default function DecisionCard({ runId, card, onDecisionMade }: Props) {
             <ul className="mt-2 space-y-1.5">
               {card.alternatives_considered.map((alt, i) => (
                 <li key={i} className="text-sm text-slate-400 pl-3 border-l-2 border-surface-600">
-                  {alt}
+                  <button
+                    onClick={() => {
+                      setCounterNote(alt)
+                      setShowCounterForm(true)
+                      setTimeout(() => document.getElementById('counter-propose-input')?.focus(), 50)
+                    }}
+                    className="text-left hover:text-brand-300 transition-colors flex items-center gap-2 group w-full"
+                  >
+                    <span>{alt}</span>
+                    <span className="text-[10px] text-brand-500/0 group-hover:text-brand-500/80 uppercase font-bold tracking-wider">Use this</span>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -130,7 +179,7 @@ export default function DecisionCard({ runId, card, onDecisionMade }: Props) {
           <textarea
             value={counterNote}
             onChange={e => setCounterNote(e.target.value)}
-            placeholder="Describe your alternative approach..."
+            placeholder="Describe your alternative approach (e.g. 'Use Age as the target column')..."
             rows={3}
             className="input-field resize-none text-sm"
             id="counter-propose-input"

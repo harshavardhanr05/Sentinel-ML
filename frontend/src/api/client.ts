@@ -6,8 +6,8 @@
 import axios from 'axios'
 import { useEffect, useRef, useCallback } from 'react'
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
+const API_BASE = (import.meta as any).env.VITE_API_URL || 'http://localhost:8000'
+const WS_BASE = (import.meta as any).env.VITE_WS_URL || 'ws://localhost:8000'
 
 export const api = axios.create({
   baseURL: API_BASE,
@@ -18,6 +18,8 @@ export const api = axios.create({
 
 export interface DecisionCard {
   stage: string
+  problem_context?: string
+  action_taken?: string
   proposed_action: string
   reasoning: string
   alternatives_considered: string[]
@@ -29,6 +31,8 @@ export interface DecisionCard {
 export interface DecisionLogEntry {
   entry_id: string
   stage: string
+  problem_context?: string
+  action_taken?: string
   proposed_action: string
   reasoning: string
   alternatives_considered: string[]
@@ -63,14 +67,24 @@ export interface GovernanceAudit {
 export interface ModelLeaderboardEntry {
   model_name: string
   model_family: string
+  hyperparameters: Record<string, any>
   auc_roc?: number
   f1_score?: number
   precision?: number
   recall?: number
   accuracy?: number
+  rmse?: number
+  mae?: number
+  train_auc_roc?: number
+  train_f1_score?: number
+  train_rmse?: number
+  train_mae?: number
+  calibration_curve: Array<{ bin_mean_predicted: number; fraction_of_positives: number }>
+  cost_estimate_seconds?: number
   cost_estimate_note?: string
   is_selected: boolean
-  calibration_curve: Array<{ bin_mean_predicted: number; fraction_of_positives: number }>
+  features_used?: string[]
+  explainability_summary?: string
 }
 
 export interface StageStatuses {
@@ -115,8 +129,8 @@ export interface PipelineState {
     profiling_notes: string[]
   }
   feature_log: {
-    accepted: Array<{ feature: string; transformation?: string; reason: string; metric_delta?: number; governance_flagged: boolean }>
-    rejected: Array<{ feature: string; reason: string; governance_flagged: boolean }>
+    accepted: Array<{ feature: string; transformation?: string | null; status: string; reason: string; metric_delta?: number | null; governance_flagged?: boolean; imputation_strategy?: string | null }>
+    rejected: Array<{ feature: string; transformation?: string | null; status: string; reason: string; governance_flagged?: boolean }>
     final_feature_set: string[]
   }
   model_leaderboard: ModelLeaderboardEntry[]
@@ -127,6 +141,7 @@ export interface PipelineState {
     top_features_summary: string[]
     local_examples: Array<unknown>
     shap_plot_path?: string
+    llm_narrative?: string
   }
   decisions_log: DecisionLogEntry[]
   final_recommendation: string

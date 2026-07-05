@@ -40,6 +40,7 @@ from backend.state.schema import (
     AuditStatus,
     FairnessMetrics,
     GovernanceAudit,
+    GovernanceLoopRecord,
     PipelineState,
     RobustnessMetrics,
     StabilityMetrics,
@@ -56,6 +57,26 @@ DEFAULT_AUC_DEGRADATION_MAX_PCT = 10.0  # % drop
 DEFAULT_BOOTSTRAP_VARIANCE_MAX = 0.03
 DEFAULT_BOOTSTRAP_N = 20
 PROXY_CORRELATION_THRESHOLD = 0.40     # Flag if |corr| with protected attr > 0.40
+
+_GOV_NARRATIVE_PROMPT = """
+You are an AI Governance Analyst reviewing the results of Governance Loop #{loop_number} for an ML model.
+
+Audit Results:
+- Overall Result: {overall_result}
+- Disparate Impact: {disparate_impact} (threshold: >= {di_min})
+- Equal Opportunity Difference: {eod} (threshold: <= {eod_max})
+- AUC Degradation under shift: {auc_deg}% (threshold: <= {auc_deg_max}%)
+- Bootstrap Variance: {bootstrap_var} (threshold: <= {bootstrap_var_max})
+- Failure Reasons: {failures}
+- Corrective Action: {corrective_action}
+
+In 2-3 sentences, clearly explain:
+1. WHY this iteration passed or failed (citing specific metrics).
+2. WHAT the corrective action is and what improvement the next loop should target.
+3. If this is a PASS, confirm the model meets all governance thresholds.
+
+Be specific and factual. Use plain English understandable to a non-technical product manager.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +201,7 @@ def run_governance(state: PipelineState) -> PipelineState:
         return state
 
     # Train the selected model (or best available)
-    model = _train_audit_model(X_train, y_train)
+    model = _train_audit_model(X_train, y_train, task_type)
 
     failures = []
 
@@ -197,8 +218,9 @@ def run_governance(state: PipelineState) -> PipelineState:
     robustness = _run_robustness_audit(model, X_test, y_test, auc_deg_max, task_type)
     state.governance_audit.robustness = robustness
     if robustness.status == AuditStatus.FAIL:
+        metric_name = "R2" if task_type in ("regression", TaskType.REGRESSION) else "AUC"
         failures.append(
-            f"Robustness FAIL: AUC degraded by {robustness.auc_degradation_pct:.1f}% "
+            f"Robustness FAIL: {metric_name} degraded by {robustness.auc_degradation_pct:.1f}% "
             f"under synthetic covariate shift (threshold: {auc_deg_max:.1f}%). "
             "Consider a more regularized model or more robust feature set."
         )
@@ -215,6 +237,7 @@ def run_governance(state: PipelineState) -> PipelineState:
 
     # ── Overall decision ──────────────────────────────────────────────
     state.governance_audit.iteration_count += 1
+    loop_number = state.governance_audit.iteration_count
 
     if failures:
         state.governance_audit.overall_status = AuditStatus.FAIL
@@ -228,6 +251,59 @@ def run_governance(state: PipelineState) -> PipelineState:
         state.governance_audit.overall_status = AuditStatus.PASS
         state.governance_audit.failure_reasons = []
         state.governance_audit.loopback_target = None
+
+    # ── Append per-loop record ─────────────────────────────────────────
+    overall_result = "PASS" if not failures else "FAIL"
+    corrective = state.governance_audit.loopback_target or "None (PASS)"
+
+    # Build LLM narrative
+    llm_narrative = None
+    try:
+        from backend.llm.client import get_llm_text
+        metric_name = "R2" if task_type in ("regression", TaskType.REGRESSION) else "AUC"
+        narrative_prompt = _GOV_NARRATIVE_PROMPT.format(
+            loop_number=loop_number,
+            overall_result=overall_result,
+            disparate_impact=round(fairness.disparate_impact, 3) if fairness.disparate_impact is not None else "N/A",
+            di_min=di_min,
+            eod=round(fairness.equal_opportunity_difference, 3) if fairness.equal_opportunity_difference is not None else "N/A",
+            eod_max=eod_max,
+            auc_deg=round(robustness.auc_degradation_pct, 2) if robustness.auc_degradation_pct is not None else "N/A",
+            auc_deg_max=auc_deg_max,
+            bootstrap_var=round(stability.metric_variance, 4) if stability.metric_variance is not None else "N/A",
+            bootstrap_var_max=bootstrap_var_max,
+            failures=" | ".join(failures) if failures else "None",
+            corrective_action=corrective,
+        ).replace("AUC degradation", f"{metric_name} degradation")
+        llm_narrative = get_llm_text(narrative_prompt)
+    except Exception:
+        llm_narrative = f"Loop {loop_number} completed with result: {overall_result}. " + (" Failures: " + str(failures) if failures else "All audits passed.")
+
+    # Get current best model metrics from leaderboard
+    best = next((m for m in state.model_leaderboard if m.is_selected), None)
+    loop_record = GovernanceLoopRecord(
+        loop_number=loop_number,
+        overall_result=overall_result,
+        auc_roc=best.auc_roc if best else None,
+        f1_score=best.f1_score if best else None,
+        rmse=best.rmse if best else None,
+        mae=best.mae if best else None,
+        disparate_impact=fairness.disparate_impact,
+        equal_opportunity_difference=fairness.equal_opportunity_difference,
+        auc_degradation_pct=robustness.auc_degradation_pct,
+        bootstrap_variance=stability.metric_variance,
+        failure_reasons=failures,
+        corrective_action=corrective if failures else None,
+        llm_narrative=llm_narrative,
+    )
+    state.governance_audit.governance_loop_history.append(loop_record)
+
+    # Log step
+    metric_name = "R2" if task_type in ("regression", TaskType.REGRESSION) else "AUC"
+    state.log_step("governance", f"Loop {loop_number} — {overall_result}",
+        f"Disparate Impact: {fairness.disparate_impact}, EOD: {fairness.equal_opportunity_difference}, "
+        f"{metric_name} Degradation: {robustness.auc_degradation_pct}%, Bootstrap Var: {stability.metric_variance}. "
+        f"Corrective action: {corrective}")
 
     return state
 
@@ -259,6 +335,10 @@ def _run_fairness_audit(
         metrics.status = AuditStatus.SKIPPED
         return metrics
 
+    # For regression tasks, fairness is measured via mean predicted-value parity
+    # rather than binary classification Disparate Impact.
+    is_regression = task_type in (TaskType.REGRESSION, "regression")
+
     # Use the first available protected attribute in the test set
     chosen_attr = None
     for attr in protected_attrs:
@@ -274,16 +354,8 @@ def _run_fairness_audit(
     metrics.threshold_used = di_min
 
     try:
-        # X_test_raw may have more columns than the model expects.
-        # We need to extract only the features the model was trained on.
-        # But wait, X_test_raw comes from df, so we should just pass the correct feature matrix to the model.
-        # Let's change the function signature of _run_fairness_audit to accept X_test (the prepared numpy array) 
-        # and just use X_test_raw for the protected attribute.
-        y_pred_proba = model.predict_proba(X_test)[:, 1]
-        y_pred = (y_pred_proba >= 0.5).astype(int)
         attr_values = X_test_raw[chosen_attr].values
 
-        # Disparate Impact: P(ŷ=1 | unprivileged) / P(ŷ=1 | privileged)
         unique_vals = np.unique(attr_values)
         if len(unique_vals) < 2:
             metrics.status = AuditStatus.SKIPPED
@@ -297,31 +369,57 @@ def _run_fairness_audit(
         priv_mask = attr_values == privileged_val
         unpriv_mask = attr_values == unprivileged_val
 
-        priv_pos_rate = float(y_pred[priv_mask].mean()) if priv_mask.sum() > 0 else 0.0
-        unpriv_pos_rate = float(y_pred[unpriv_mask].mean()) if unpriv_mask.sum() > 0 else 0.0
+        if is_regression:
+            # For regression: compare mean predicted values between groups
+            y_pred_cont = model.predict(X_test)
+            priv_mean = float(y_pred_cont[priv_mask].mean()) if priv_mask.sum() > 0 else 0.0
+            unpriv_mean = float(y_pred_cont[unpriv_mask].mean()) if unpriv_mask.sum() > 0 else 0.0
 
-        if priv_pos_rate > 0:
-            di = unpriv_pos_rate / priv_pos_rate
+            # Disparate Impact for regression: ratio of mean predictions
+            if abs(priv_mean) > 1e-8:
+                di = unpriv_mean / priv_mean
+            else:
+                di = 1.0
+            metrics.disparate_impact = round(abs(di), 4)
+
+            # Equal Opportunity Difference: difference in mean predicted vs actual (bias)
+            priv_actual_mean = float(y_test[priv_mask].mean()) if priv_mask.sum() > 0 else 0.0
+            unpriv_actual_mean = float(y_test[unpriv_mask].mean()) if unpriv_mask.sum() > 0 else 0.0
+            priv_bias = abs(float(y_pred_cont[priv_mask].mean()) - priv_actual_mean) if priv_mask.sum() > 0 else 0.0
+            unpriv_bias = abs(float(y_pred_cont[unpriv_mask].mean()) - unpriv_actual_mean) if unpriv_mask.sum() > 0 else 0.0
+            eod = abs(unpriv_bias - priv_bias)
+            metrics.equal_opportunity_difference = round(eod, 4)
+
+            # No per-group confusion matrices for regression
+            metrics.per_group_confusion_matrices = {}
         else:
-            di = 1.0
+            # Classification path (unchanged)
+            y_pred_proba = model.predict_proba(X_test)[:, 1]
+            y_pred = (y_pred_proba >= 0.5).astype(int)
 
-        metrics.disparate_impact = round(di, 4)
+            priv_pos_rate = float(y_pred[priv_mask].mean()) if priv_mask.sum() > 0 else 0.0
+            unpriv_pos_rate = float(y_pred[unpriv_mask].mean()) if unpriv_mask.sum() > 0 else 0.0
 
-        # Equal Opportunity Difference: TPR_unprivileged - TPR_privileged
-        priv_tp = float(y_pred[priv_mask & (y_test == 1)].mean()) if (priv_mask & (y_test == 1)).sum() > 0 else 0.0
-        unpriv_tp = float(y_pred[unpriv_mask & (y_test == 1)].mean()) if (unpriv_mask & (y_test == 1)).sum() > 0 else 0.0
-        eod = abs(unpriv_tp - priv_tp)
-        metrics.equal_opportunity_difference = round(eod, 4)
+            if priv_pos_rate > 0:
+                di = unpriv_pos_rate / priv_pos_rate
+            else:
+                di = 1.0
+            metrics.disparate_impact = round(di, 4)
 
-        # Per-group confusion matrices
-        for val in [privileged_val, unprivileged_val]:
-            mask = attr_values == val
-            if mask.sum() > 0:
-                cm = confusion_matrix(y_test[mask], y_pred[mask]).tolist()
-                metrics.per_group_confusion_matrices[str(val)] = cm
+            priv_tp = float(y_pred[priv_mask & (y_test == 1)].mean()) if (priv_mask & (y_test == 1)).sum() > 0 else 0.0
+            unpriv_tp = float(y_pred[unpriv_mask & (y_test == 1)].mean()) if (unpriv_mask & (y_test == 1)).sum() > 0 else 0.0
+            eod = abs(unpriv_tp - priv_tp)
+            metrics.equal_opportunity_difference = round(eod, 4)
 
-        # Pass/fail determination
-        failed = (di < di_min) or (eod > eod_max)
+            for val in [privileged_val, unprivileged_val]:
+                mask = attr_values == val
+                if mask.sum() > 0:
+                    cm = confusion_matrix(y_test[mask], y_pred[mask]).tolist()
+                    metrics.per_group_confusion_matrices[str(val)] = cm
+
+        # Pass/fail determination (same threshold applies to both tracks)
+        failed = (metrics.disparate_impact is not None and metrics.disparate_impact < di_min) or \
+                 (metrics.equal_opportunity_difference is not None and metrics.equal_opportunity_difference > eod_max)
         metrics.status = AuditStatus.FAIL if failed else AuditStatus.PASS
 
     except Exception as e:
@@ -367,16 +465,19 @@ def _run_robustness_audit(
         return metrics
 
     try:
-        baseline_auc = _score_model(model, X_test, y_test, task_type)
+        baseline_score = _score_model(model, X_test, y_test, task_type)
 
         # Shift ALL numeric features by adding noise (synthetic covariate shift)
         X_shifted = X_test + np.random.normal(0, X_test.std(axis=0) * 0.5, X_test.shape)
-        shifted_auc = _score_model(model, X_shifted, y_test, task_type)
+        shifted_score = _score_model(model, X_shifted, y_test, task_type)
 
-        if baseline_auc > 0:
-            degradation_pct = float((baseline_auc - shifted_auc) / baseline_auc * 100)
+        if abs(baseline_score) > 1e-8:
+            degradation_pct = float((baseline_score - shifted_score) / abs(baseline_score) * 100)
         else:
             degradation_pct = 0.0
+
+        # For regression, R2 can be negative, so cap degradation pct below -100
+        degradation_pct = max(degradation_pct, -100.0)
 
         metrics.auc_degradation_pct = round(degradation_pct, 2)
         metrics.shift_description = "Synthetic noise shift: +0.5 std dev on all numeric features"
@@ -415,14 +516,21 @@ def _run_stability_audit(
         try:
             indices = rng.choice(len(X_train), size=len(X_train), replace=True)
             X_boot, y_boot = X_train[indices], y_train[indices]
-            model = LogisticRegression(max_iter=100, C=1.0, random_state=42)
-            model.fit(X_boot, y_boot)
+            # Use correct model type per task
+            if task_type in (TaskType.REGRESSION, "regression"):
+                from sklearn.linear_model import LinearRegression
+                boot_model = LinearRegression()
+            else:
+                boot_model = LogisticRegression(max_iter=100, C=1.0, random_state=42)
+            boot_model.fit(X_boot, y_boot)
             # Evaluate on out-of-bag (indices not in boot sample)
             oob_mask = np.ones(len(X_train), dtype=bool)
             oob_mask[indices] = False
             if oob_mask.sum() > 5:
-                score = _score_model(model, X_train[oob_mask], y_train[oob_mask], task_type)
+                score = _score_model(boot_model, X_train[oob_mask], y_train[oob_mask], task_type)
                 scores.append(score)
+        except Exception:
+            continue
         except Exception:
             continue
 
@@ -490,9 +598,14 @@ def _prepare_audit_data(
         return None, None, None, None, None
 
 
-def _train_audit_model(X_train: np.ndarray, y_train: np.ndarray):
-    """Train a lightweight LR for audit purposes."""
-    model = LogisticRegression(max_iter=300, C=1.0, random_state=42)
+def _train_audit_model(X_train: np.ndarray, y_train: np.ndarray, task_type: str):
+    """Train a lightweight LR/Linear for audit purposes."""
+    from backend.state.schema import TaskType
+    if task_type in (TaskType.REGRESSION, "regression"):
+        from sklearn.linear_model import LinearRegression
+        model = LinearRegression()
+    else:
+        model = LogisticRegression(max_iter=300, C=1.0, random_state=42)
     model.fit(X_train, y_train)
     return model
 

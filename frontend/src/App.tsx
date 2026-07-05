@@ -137,7 +137,12 @@ export default function App() {
           )}
 
           <button
-            onClick={() => setShowNewRun(!showNewRun)}
+            onClick={() => {
+              setObjective('')
+              setFile(null)
+              setStartError(null)
+              setShowNewRun(!showNewRun)
+            }}
             className="btn-primary text-sm"
             id="new-run-btn"
           >
@@ -182,7 +187,7 @@ export default function App() {
                       type="file"
                       accept=".csv,.parquet,.pq,.tsv"
                       onChange={e => setFile(e.target.files?.[0] || null)}
-                      className="absolute inset-0 opacity-0 cursor-pointer"
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                     />
                     <div className={`input-field flex items-center gap-3 cursor-pointer hover:border-brand-500 ${file ? 'border-brand-600' : ''}`}>
                       <Upload size={16} className="text-slate-400 flex-shrink-0" />
@@ -261,18 +266,20 @@ export default function App() {
           {/* Tab content */}
           <div className="animate-fade-in">
             {activeTab === 'dag' && (
-              <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-                <div className="xl:col-span-2">
-                  <div className="card p-0 overflow-hidden">
-                    <PipelineDAG
-                      stageStatuses={state.stage_statuses}
-                      currentStage={state.current_stage}
-                      isPaused={state.is_paused}
-                      governanceIterations={state.governance_audit?.iteration_count || 0}
-                    />
+              <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 items-start">
+                <div className="xl:col-span-3">
+                  <div className="card p-0 overflow-hidden min-h-[650px] flex flex-col">
+                    <div className="flex-1 w-full h-full">
+                      <PipelineDAG
+                        stageStatuses={state.stage_statuses}
+                        currentStage={state.current_stage}
+                        isPaused={state.is_paused}
+                        governanceIterations={state.governance_audit?.iteration_count || 0}
+                      />
+                    </div>
                   </div>
                 </div>
-                <div className="space-y-4">
+                <div className="space-y-4 xl:col-span-1">
                   {/* Run info card */}
                   <div className="card">
                     <h3 className="section-title text-sm">Run Info</h3>
@@ -295,9 +302,18 @@ export default function App() {
                         <div>
                           <span className="text-slate-400 text-xs">Protected attrs:</span>
                           <div className="flex flex-wrap gap-1 mt-1">
-                            {state.objective.protected_attributes.map(a => (
-                              <span key={a} className="text-xs bg-purple-900/40 border border-purple-800/40 text-purple-300 px-2 py-0.5 rounded">{a}</span>
-                            ))}
+                            {state.objective.protected_attributes.map(a => {
+                              const reasoning = (state.objective as any).protected_attribute_reasoning?.[a]
+                              return (
+                                <span
+                                  key={a}
+                                  title={reasoning || 'Sensitive demographic attribute flagged for fairness monitoring'}
+                                  className="text-xs bg-purple-900/40 border border-purple-800/40 text-purple-300 px-2 py-0.5 rounded cursor-help hover:bg-purple-900/60 hover:border-purple-700/60 transition-colors"
+                                >
+                                  {a}
+                                </span>
+                              )
+                            })}
                           </div>
                         </div>
                       )}
@@ -359,7 +375,8 @@ export default function App() {
 
             {activeTab === 'data-analysis' && (
               <DataAnalysisDashboard
-                metrics={(state as any).data_analysis_metrics || {}}
+                metrics={state.data_analysis_metrics || {}}
+                targetColumn={state.objective?.target_column}
               />
             )}
 
@@ -370,6 +387,7 @@ export default function App() {
                 featureImportance={state.explainability?.global_shap_values || {}}
                 costEstimates={(state as any).cost_estimates || {}}
                 finalFeatures={state.feature_log?.final_feature_set || []}
+                taskType={state.objective?.task_type || 'classification'}
               />
             )}
 
@@ -379,6 +397,7 @@ export default function App() {
                 topFeatures={state.explainability?.top_features_summary || []}
                 localExamples={(state.explainability?.local_examples as any[]) || []}
                 finalFeatures={state.feature_log?.final_feature_set || []}
+                llmNarrative={state.explainability?.llm_narrative}
               />
             )}
 
@@ -386,6 +405,8 @@ export default function App() {
               <AuditTrailViewer
                 decisions={state.decisions_log || []}
                 runId={activeRunId}
+                featureLog={state.feature_log}
+                agentStepLog={(state as any).agent_step_log || []}
               />
             )}
           </div>

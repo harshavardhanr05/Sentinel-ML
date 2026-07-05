@@ -1,0 +1,120 @@
+{
+  "run_id": "d813b5e3-efc6-4023-8cc1-91f87ecafd40",
+  "created_at": "2026-07-04T14:35:33.753018",
+  "updated_at": "2026-07-04T14:35:33.753059",
+  "objective": {
+    "raw_text": "Predict the depressed class of  Social media impact on student's mental health dataset and make sure to include only the appropraiate columns by doing the apppropriate tests",
+    "task_type": "unknown",
+    "target_column": null,
+    "target_column_candidates": [],
+    "optimization_priority": null,
+    "protected_attributes": [],
+    "protected_attributes_reasoning": {},
+    "domain_tag": "generic",
+    "is_ambiguous": false,
+    "clarification_needed": [],
+    "feature_selection_top_k": null
+  },
+  "dataset_path": "./data/uploads/d813b5e3-efc6-4023-8cc1-91f87ecafd40.csv",
+  "dataset_filename": "Teen_Mental_Health_Dataset.csv",
+  "current_stage": "objective_intake",
+  "stage_statuses": {
+    "objective_intake": "pending",
+    "compliance": "pending",
+    "data_profiling": "pending",
+    "feature_engineering": "pending",
+    "model_selection": "pending",
+    "governance": "pending",
+    "explainability": "pending",
+    "reporting": "pending"
+  },
+  "is_paused": false,
+  "pending_approval": null,
+  "error_message": "'\"column_name\"'",
+  "data_schema": {
+    "columns": [
+      "age",
+      "gender",
+      "daily_social_media_hours",
+      "platform_usage",
+      "sleep_hours",
+      "screen_time_before_sleep",
+      "academic_performance",
+      "physical_activity",
+      "social_interaction_level",
+      "stress_level",
+      "anxiety_level",
+      "addiction_level",
+      "depression_label"
+    ],
+    "dtypes": {
+      "age": "int64",
+      "gender": "object",
+      "daily_social_media_hours": "float64",
+      "platform_usage": "object",
+      "sleep_hours": "float64",
+      "screen_time_before_sleep": "float64",
+      "academic_performance": "float64",
+      "physical_activity": "float64",
+      "social_interaction_level": "object",
+      "stress_level": "int64",
+      "anxiety_level": "int64",
+      "addiction_level": "int64",
+      "depression_label": "int64"
+    }
+  },
+  "data_health_report": null,
+  "data_analysis_metrics": {},
+  "feature_log": {
+    "accepted": [],
+    "rejected": [],
+    "final_feature_set": []
+  },
+  "model_leaderboard": [],
+  "selected_model_name": null,
+  "governance_audit": {
+    "fairness": {
+      "disparate_impact": null,
+      "equal_opportunity_difference": null,
+      "demographic_parity_difference": null,
+      "per_group_confusion_matrices": {},
+      "protected_attribute": null,
+      "threshold_used": null,
+      "status": "NOT_RUN"
+    },
+    "robustness": {
+      "auc_degradation_pct": null,
+      "shift_description": null,
+      "perturbed_features": [],
+      "status": "NOT_RUN"
+    },
+    "stability": {
+      "bootstrap_n": 0,
+      "metric_variance": null,
+      "metric_std": null,
+      "metric_mean": null,
+      "status": "NOT_RUN"
+    },
+    "compliance_checklist": [],
+    "compliance_thresholds": {},
+    "overall_status": "NOT_RUN",
+    "failure_reasons": [],
+    "loopback_target": null,
+    "iteration_count": 0
+  },
+  "explainability": {
+    "global_shap_values": {},
+    "top_features_summary": [],
+    "local_examples": [],
+    "shap_plot_path": null
+  },
+  "decisions_log": [],
+  "cost_estimates": {},
+  "smote_applied": false,
+  "smote_class_distributions": {},
+  "model_card_path": null,
+  "audit_trail_path": null,
+  "final_recommendation": "PENDING",
+  "final_recommendation_reasoning": null,
+  "lineage": {}
+}
