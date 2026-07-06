@@ -9,7 +9,7 @@
 
 import React, { useState, useCallback } from 'react'
 import {
-  Shield, Upload, Play, ChevronRight, Database,
+  Shield, Upload, Play, ChevronRight, Database, Download,
   BarChart2, Clock, Lightbulb, MessageSquare, Zap, AlertCircle, TrendingUp, FileText, FileCode
 } from 'lucide-react'
 import {
@@ -326,14 +326,21 @@ export default function App() {
                       {state.current_stage === 'completed' && (
                         <div className="pt-4 mt-4 border-t border-surface-700/50 space-y-2">
                           <button
-                            onClick={() => window.open(`http://localhost:8000/runs/${activeRunId}/model-card`, '_blank')}
+                            onClick={() => window.open(`/api/runs/${activeRunId}/export`, '_blank')}
+                            className="btn-primary w-full justify-center flex items-center gap-2"
+                          >
+                            <Download size={14} />
+                            Download Model (.joblib)
+                          </button>
+                          <button
+                            onClick={() => window.open(`/api/runs/${activeRunId}/model-card`, '_blank')}
                             className="btn-secondary w-full justify-center flex items-center gap-2"
                           >
                             <FileText size={14} />
                             View Model Card
                           </button>
                           <button
-                            onClick={() => window.open(`http://localhost:8000/runs/${activeRunId}/audit-trail`, '_blank')}
+                            onClick={() => window.open(`/api/runs/${activeRunId}/audit-trail`, '_blank')}
                             className="btn-secondary w-full justify-center flex items-center gap-2"
                           >
                             <FileCode size={14} />

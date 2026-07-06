@@ -198,7 +198,7 @@ def run_orchestrator(state: PipelineState) -> PipelineState:
     except Exception as e:
         raise RuntimeError(
             f"Could not parse objective automatically (error: {e}). "
-            "Please ensure your GEMINI_API_KEY is set in the .env file."
+            "Please ensure your API Key for the selected LLM_PROVIDER is set in the .env file."
         )
 
     return state

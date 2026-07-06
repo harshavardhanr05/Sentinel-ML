@@ -250,7 +250,11 @@ export default function DecisionCard({ runId, card, onDecisionMade }: Props) {
           className="btn-danger flex-1 justify-center"
         >
           <XCircle size={16} />
-          {loading === 'reject' ? 'Rejecting...' : 'Reject'}
+          {loading === 'reject' ? 'Rejecting...' : 
+            card.stage === 'model_selection' ? 'Retrain Models' :
+            card.stage === 'feature_engineering' ? 'Retry Engineering' :
+            card.stage === 'data_profiling' ? 'Retry Profiling' :
+            'Reject'}
         </button>
         <button
           id="counter-propose-btn"

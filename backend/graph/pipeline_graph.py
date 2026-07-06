@@ -521,16 +521,56 @@ def build_pipeline_graph() -> StateGraph:
     graph.add_node("explainability", node_explainability)
     graph.add_node("reporting", node_reporting)
 
-    # ── Linear edges ─────────────────────────────────────────────────
+    # ── Conditional Routers for Rewinding ────────────────────────────
+    def route_after_data_profiling(state: PipelineState) -> str:
+        status = getattr(state.stage_statuses, "data_profiling", None)
+        if status == StageStatus.REJECTED:
+            return "data_profiling"
+        return "feature_engineering"
+
+    def route_after_feature_engineering(state: PipelineState) -> str:
+        status = getattr(state.stage_statuses, "feature_engineering", None)
+        if status == StageStatus.REJECTED:
+            return "feature_engineering"
+        return "model_selection"
+
+    def route_after_model_selection(state: PipelineState) -> str:
+        status = getattr(state.stage_statuses, "model_selection", None)
+        if status == StageStatus.REJECTED:
+            return "feature_engineering"
+        return "governance"
+
+    # ── Edges ─────────────────────────────────────────────────
     graph.add_edge(START, "orchestrator")
     graph.add_edge("orchestrator", "compliance")
     graph.add_edge("compliance", "data_profiling")
 
-    # After data_profiling sets is_paused=True, the graph emits state.
-    # The API resumes from feature_engineering after user approves.
-    graph.add_edge("data_profiling", "feature_engineering")
-    graph.add_edge("feature_engineering", "model_selection")
-    graph.add_edge("model_selection", "governance")
+    graph.add_conditional_edges(
+        "data_profiling",
+        route_after_data_profiling,
+        {
+            "data_profiling": "data_profiling",
+            "feature_engineering": "feature_engineering",
+        },
+    )
+
+    graph.add_conditional_edges(
+        "feature_engineering",
+        route_after_feature_engineering,
+        {
+            "feature_engineering": "feature_engineering",
+            "model_selection": "model_selection",
+        },
+    )
+
+    graph.add_conditional_edges(
+        "model_selection",
+        route_after_model_selection,
+        {
+            "feature_engineering": "feature_engineering",
+            "governance": "governance",
+        },
+    )
 
     # ── Conditional edge: governance → pass/fail loopback ─────────────
     graph.add_conditional_edges(

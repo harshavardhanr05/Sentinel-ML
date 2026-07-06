@@ -8,10 +8,13 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   LineChart, Line, CartesianGrid, Legend,
   RadialBarChart, RadialBar,
+  PieChart, Pie, Cell,
 } from 'recharts'
-import { ShieldCheck, ShieldAlert, TrendingUp, Activity, ChevronDown, ChevronRight, CheckCircle, XCircle, RefreshCw } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, TrendingUp, Activity, ChevronDown, ChevronRight, CheckCircle, XCircle, RefreshCw, Info } from 'lucide-react'
 import type { ModelLeaderboardEntry, GovernanceAudit } from '../api/client'
 import clsx from 'clsx'
+
+const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#3b82f6', '#14b8a6', '#f43f5e']
 
 interface GovernanceLoopRecord {
   loop_number: number
@@ -78,6 +81,7 @@ function MetricCard({ label, value, threshold, status, description }: {
 }
 
 export default function InsightDashboard({ leaderboard, governance, featureImportance, costEstimates, finalFeatures = [], taskType = 'classification' }: Props) {
+  const [activeLightboxChart, setActiveLightboxChart] = useState<any>(null)
   const isReg = taskType === 'regression' || taskType === 'REGRESSION'
   const metric1Label = isReg ? 'R2 Score' : 'AUC-ROC'
   const metric2Label = isReg ? 'RMSE' : 'F1 Score'
@@ -105,67 +109,6 @@ export default function InsightDashboard({ leaderboard, governance, featureImpor
 
   return (
     <div className="space-y-6">
-
-      {/* Governance Overview */}
-      <div className="card">
-        <div className="flex items-center gap-2 mb-5">
-          {governance.overall_status === 'PASS'
-            ? <ShieldCheck size={18} className="text-emerald-400" />
-            : <ShieldAlert size={18} className="text-red-400" />
-          }
-          <h3 className="section-title mb-0">Governance Audit</h3>
-          <div className="ml-auto">
-            <StatusBadge status={governance.overall_status} />
-          </div>
-        </div>
-
-        {governance.failure_reasons.length > 0 && (
-          <div className="bg-red-950/30 border border-red-800/40 rounded-xl p-4 mb-5">
-            <p className="text-xs font-semibold text-red-400 uppercase tracking-wide mb-2">Failure Reasons</p>
-            <ul className="space-y-1">
-              {governance.failure_reasons.map((r, i) => (
-                <li key={i} className="text-sm text-red-300 flex gap-2">
-                  <span className="text-red-500 mt-0.5">•</span>
-                  <span>{r}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <MetricCard
-            label="Disparate Impact"
-            value={di}
-            threshold={diThreshold}
-            status={di !== null && di !== undefined && diThreshold !== undefined ? (di >= diThreshold ? 'PASS' : 'FAIL') : governance.fairness.status}
-            description={`Protected: ${governance.fairness.protected_attribute || 'N/A'}`}
-          />
-          <MetricCard
-            label="Equal Opp. Difference"
-            value={eod}
-            threshold={eodThreshold}
-            status={eod !== null && eod !== undefined && eodThreshold !== undefined ? (eod <= eodThreshold ? 'PASS' : 'FAIL') : governance.fairness.status}
-            description="Lower is better (|TPR_gap|)"
-          />
-          <MetricCard
-            label="AUC Degradation %"
-            value={governance.robustness.auc_degradation_pct}
-            threshold={robThreshold}
-            status={governance.robustness.status}
-            description="Under synthetic covariate shift"
-          />
-        </div>
-
-        {/* Compliance checklist */}
-        {governance.compliance_checklist.length > 0 && (
-          <div className="mt-4 flex flex-wrap gap-2">
-            {governance.compliance_checklist.map(r => (
-              <span key={r} className="badge badge-info">{r}</span>
-            ))}
-          </div>
-        )}
-      </div>
 
       {/* Model Leaderboard */}
       <div className="card">
@@ -238,6 +181,131 @@ export default function InsightDashboard({ leaderboard, governance, featureImpor
         )}
       </div>
 
+      {/* Governance Overview */}
+      <div className="card">
+        <div className="flex items-center gap-2 mb-5">
+          {governance.overall_status === 'PASS'
+            ? <ShieldCheck size={18} className="text-emerald-400" />
+            : <ShieldAlert size={18} className="text-red-400" />
+          }
+          <h3 className="section-title mb-0">Governance Audit</h3>
+          <div className="ml-auto">
+            <StatusBadge status={governance.overall_status} />
+          </div>
+        </div>
+
+        {governance.compliance_reasoning && (
+          <div className="bg-brand-950/20 border border-brand-800/40 rounded-xl p-4 mb-5 flex gap-3">
+            <Info size={16} className="text-brand-400 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-xs font-semibold text-brand-400 uppercase tracking-wide">AI Governance Plan Justification</p>
+              <p className="text-sm text-slate-300 mt-1 leading-relaxed">{governance.compliance_reasoning}</p>
+            </div>
+          </div>
+        )}
+
+        {governance.failure_reasons.length > 0 && (
+          <div className="bg-red-950/30 border border-red-800/40 rounded-xl p-4 mb-5">
+            <p className="text-xs font-semibold text-red-400 uppercase tracking-wide mb-2">Failure Reasons</p>
+            <ul className="space-y-1">
+              {governance.failure_reasons.map((r, i) => (
+                <li key={i} className="text-sm text-red-300 flex gap-2">
+                  <span className="text-red-500 mt-0.5">•</span>
+                  <span>{r}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <MetricCard
+            label="Disparate Impact"
+            value={di}
+            threshold={diThreshold}
+            status={di !== null && di !== undefined && diThreshold !== undefined ? (di >= diThreshold ? 'PASS' : 'FAIL') : governance.fairness.status}
+            description={`Protected: ${governance.fairness.protected_attribute || 'N/A'}`}
+          />
+          <MetricCard
+            label="Equal Opp. Difference"
+            value={eod}
+            threshold={eodThreshold}
+            status={eod !== null && eod !== undefined && eodThreshold !== undefined ? (eod <= eodThreshold ? 'PASS' : 'FAIL') : governance.fairness.status}
+            description="Lower is better (|TPR_gap|)"
+          />
+          <MetricCard
+            label="AUC Degradation %"
+            value={governance.robustness.auc_degradation_pct}
+            threshold={robThreshold}
+            status={governance.robustness.status}
+            description="Under synthetic covariate shift"
+          />
+        </div>
+
+        {/* Compliance checklist */}
+        {governance.compliance_checklist.length > 0 && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {governance.compliance_checklist.map(r => (
+              <span key={r} className="badge badge-info">{r}</span>
+            ))}
+          </div>
+        )}
+
+        {/* Visual Auditing (AI Charts) */}
+        {(governance as any).ai_charts && (governance as any).ai_charts.length > 0 && (
+          <div className="mt-8 pt-6 border-t border-surface-700/50">
+            <h4 className="text-sm font-bold text-slate-300 mb-4 flex items-center gap-2">
+              <ShieldCheck size={15} className="text-brand-400" />
+              Visual Auditing Reports
+            </h4>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {(governance as any).ai_charts.map((chart: any, idx: number) => (
+                <div key={chart.id || idx} className="bg-surface-800/60 backdrop-blur-md rounded-2xl border border-surface-600/40 p-4 flex flex-col gap-3">
+                  <div>
+                    <h5 className="text-sm font-bold text-slate-200">{chart.title}</h5>
+                    {chart.insight && <p className="text-xs text-slate-500 mt-0.5">{chart.insight}</p>}
+                  </div>
+                  <div className="flex-1 bg-white/5 rounded-lg overflow-hidden flex items-center justify-center p-2 min-h-[220px]">
+                    {chart.imageBase64 ? (
+                      <div className="cursor-zoom-in w-full h-full flex items-center justify-center" onClick={() => setActiveLightboxChart(chart)}>
+                        <img src={`data:image/png;base64,${chart.imageBase64}`} alt={chart.title} className="max-w-full max-h-[200px] object-contain rounded hover:scale-[1.01] transition-transform duration-200" style={{ imageRendering: 'auto' }} />
+                      </div>
+                    ) : (
+                      <ResponsiveContainer width="100%" height={200}>
+                        {chart.type === 'pie' || chart.type === 'doughnut' ? (
+                          <PieChart>
+                            <Pie data={chart.data} cx="50%" cy="50%" innerRadius={chart.type === 'doughnut' ? 35 : 0} outerRadius={70} paddingAngle={4} dataKey="count" stroke="none">
+                              {chart.data.map((_: any, i: number) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                            </Pie>
+                            <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, color: '#e2e8f0', fontSize: 11 }} />
+                          </PieChart>
+                        ) : chart.type === 'line' ? (
+                          <LineChart data={chart.data}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                            <XAxis dataKey="name" stroke="#94a3b8" fontSize={9} tick={{ fill: '#94a3b8' }} tickLine={false} />
+                            <YAxis stroke="#94a3b8" fontSize={9} tick={{ fill: '#94a3b8' }} tickLine={false} axisLine={false} />
+                            <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, color: '#e2e8f0', fontSize: 11 }} />
+                            <Line type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={2} dot={{ r: 3 }} />
+                          </LineChart>
+                        ) : (
+                          <BarChart data={chart.data}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                            <XAxis dataKey="name" stroke="#94a3b8" fontSize={9} tick={{ fill: '#94a3b8' }} tickLine={false} />
+                            <YAxis stroke="#94a3b8" fontSize={9} tick={{ fill: '#94a3b8' }} tickLine={false} axisLine={false} />
+                            <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, color: '#e2e8f0', fontSize: 11 }} />
+                            <Bar dataKey="count" fill="#8b5cf6" radius={[3, 3, 0, 0]} />
+                          </BarChart>
+                        )}
+                      </ResponsiveContainer>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Governance Loop History */}
       {(governance as any).governance_loop_history?.length > 0 && (
         <div className="card">
@@ -296,6 +364,21 @@ export default function InsightDashboard({ leaderboard, governance, featureImpor
               <Bar dataKey="importance" fill="#8b5cf6" radius={[0, 4, 4, 0]} label={{ position: 'right', fill: '#94a3b8', fontSize: 10 }} />
             </BarChart>
           </ResponsiveContainer>
+        </div>
+      )}
+      {/* Lightbox Modal */}
+      {activeLightboxChart && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-950/80 backdrop-blur-md transition-all duration-300" onClick={() => setActiveLightboxChart(null)}>
+          <div className="relative max-w-6xl w-full bg-surface-900 border border-surface-700/60 rounded-3xl p-6 shadow-2xl flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+            <button className="absolute top-4 right-4 text-slate-400 hover:text-slate-200 text-lg font-bold bg-surface-800 hover:bg-surface-700 w-8 h-8 flex items-center justify-center rounded-lg transition-colors" onClick={() => setActiveLightboxChart(null)}>✕</button>
+            <div>
+              <h3 className="text-lg font-bold text-slate-100 pr-8">{activeLightboxChart.title}</h3>
+              {activeLightboxChart.insight && <p className="text-sm text-slate-400 mt-1">{activeLightboxChart.insight}</p>}
+            </div>
+            <div className="flex-1 bg-white/5 rounded-2xl overflow-hidden flex items-center justify-center p-4 min-h-[400px] max-h-[75vh]">
+              <img src={`data:image/png;base64,${activeLightboxChart.imageBase64}`} alt={activeLightboxChart.title} className="max-h-full max-w-full object-contain rounded-xl" style={{ imageRendering: 'auto' }} />
+            </div>
+          </div>
         </div>
       )}
     </div>

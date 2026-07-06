@@ -71,12 +71,82 @@ Audit Results:
 - Failure Reasons: {failures}
 - Corrective Action: {corrective_action}
 
-In 2-3 sentences, clearly explain:
-1. WHY this iteration passed or failed (citing specific metrics).
-2. WHAT the corrective action is and what improvement the next loop should target.
-3. If this is a PASS, confirm the model meets all governance thresholds.
+Write a concise, plain English paragraph (max 3 sentences) explaining: why this passed/failed, any corrective action taken, and confirming compliance if it passed. 
+Do not use headings, bullet points, or markdown formatting. Be specific and factual. Use plain English understandable to a non-technical product manager.
+"""
 
-Be specific and factual. Use plain English understandable to a non-technical product manager.
+_GOVERNANCE_PLAN_PROMPT = """
+You are a Senior AI Safety and Compliance Officer. Given the user's objective, dataset context, and identified potential protected attributes, define the compliance audit plan.
+
+Your job is to determine:
+1. Which of the identified protected attributes should actually be audited for bias/fairness (e.g. 'gender', 'race').
+2. Whether to completely skip fairness checks (e.g. if the task is clinical/medical and variables like 'age', 'sex' are crucial physiological predictors where parity checks are counterproductive or harmful).
+3. The exact thresholds for the checks (disparate_impact_min, equal_opportunity_diff_max, auc_degradation_max_pct, bootstrap_variance_max).
+
+User Objective: {objective}
+Task Type: {task_type}
+Target Column: {target_column}
+Candidate Protected Attributes: {candidate_protected_attributes}
+Dataset Columns and Types:
+{column_info}
+
+Return ONLY a JSON object conforming exactly to this schema:
+{{
+  "protected_attributes_to_audit": ["list of exact attribute names to audit for fairness"],
+  "skip_fairness_checks": true | false,
+  "disparate_impact_min": 0.80,
+  "equal_opportunity_diff_max": 0.10,
+  "auc_degradation_max_pct": 10.0,
+  "bootstrap_variance_max": 0.03,
+  "reasoning": "A detailed, professional explanation of why this audit plan was chosen for this specific scenario (e.g., explaining why medical variables are physiological predictors and bypass audits, or why loan models require strict ECOA checks)."
+}}
+Only return JSON. Do not include markdown blocks.
+"""
+
+_GOVERNANCE_CHART_PROMPT = """
+You are an expert AI Governance and AI Fairness Auditor. Your task is to generate 2-3 visual auditing charts (e.g. demographic parity charts, confusion matrices, or performance comparison charts) based on the audit results.
+
+For each visualization, you can choose to output EITHER:
+- **Option A (Interactive React UI Chart)**: For simple comparisons, fairness gaps, or degradation metrics. These are fully interactive and hoverable.
+- **Option B (Static Seaborn/Matplotlib Plot)**: For complex grids, demographic confusion matrices, or customized visual plots.
+
+Write a complete, standalone Python script that processes the audit data and prints a single valid JSON array to `sys.stdout` containing all the charts.
+
+The JSON array must look like this:
+[
+  {{
+    // Option A: Interactive React UI chart
+    "id": "gov-chart-1",
+    "title": "Interactive Demographic Parity Ratio",
+    "insight": "Demographic parity ratio compared across groups.",
+    "type": "bar" | "line" | "pie" | "doughnut",
+    "data": [
+      {{ "name": "Privileged Group", "count": 0.85 }},
+      {{ "name": "Unprivileged Group", "count": 0.78 }}
+    ]
+  }},
+  {{
+    // Option B: Static Seaborn/Matplotlib plot
+    "id": "gov-chart-2",
+    "title": "Demographic Confusion Matrices",
+    "insight": "Side-by-side demographic confusion matrix heatmap.",
+    "imageBase64": "iVBORw0KGgoAAAANSUhEUgAA..." // Base64 encoded PNG
+  }},
+  ...
+]
+
+CRITICAL RULES:
+- **PREREQUISITE (PREFER INTERACTIVE REACT CHARTS)**: You MUST default to **Option A (Interactive React UI Chart)** for any standard plots (such as demographic performance comparisons, simple fairness gap bar charts, or stability metrics).
+- **Option B (Static Seaborn Image)** should ONLY be used when the visualization is physically impossible to construct in Recharts (e.g., custom double-heatmap grids). If a chart can be represented as an Option A chart, you MUST output it as Option A.
+- Do NOT output any markdown blocks like ```python. ONLY output the raw Python code.
+- Only print the JSON to stdout. Do not print anything else.
+- Make sure to `import sys`, `import json`, `import base64`, `import io`, `import pandas as pd`, `import seaborn as sns`, `import matplotlib.pyplot as plt`, `import numpy as np`.
+- You MUST run `sys.stdout.reconfigure(encoding='utf-8')` right after imports to prevent Windows console encoding errors. Do NOT use `ensure_ascii=False` when calling `json.dump` or `json.dumps`.
+
+Audit Data (use this directly in your Python code as Python dictionaries):
+Fairness Metrics: {fairness_metrics}
+Robustness Metrics: {robustness_metrics}
+Stability Metrics: {stability_metrics}
 """
 
 
@@ -184,12 +254,56 @@ def run_governance(state: PipelineState) -> PipelineState:
         state.governance_audit.overall_status = AuditStatus.SKIPPED
         return state
 
-    # Get compliance thresholds (injected by Compliance Agent)
-    thresholds = state.governance_audit.compliance_thresholds
-    di_min = thresholds.get("disparate_impact_min", DEFAULT_DISPARATE_IMPACT_MIN)
-    eod_max = thresholds.get("equal_opportunity_diff_max", DEFAULT_EOD_MAX)
-    auc_deg_max = thresholds.get("auc_degradation_max_pct", DEFAULT_AUC_DEGRADATION_MAX_PCT)
-    bootstrap_var_max = thresholds.get("bootstrap_variance_max", DEFAULT_BOOTSTRAP_VARIANCE_MAX)
+    # ── Dynamic AI Governance Planning ──
+    from backend.llm.client import get_llm_json
+    import json
+    
+    col_info = {}
+    for col in df.columns:
+        is_cat = str(df[col].dtype) in ["object", "category"] or df[col].nunique() < 15
+        col_info[col] = {
+            "type": "categorical" if is_cat else "numeric",
+            "unique": int(df[col].nunique()),
+        }
+
+    plan_prompt = _GOVERNANCE_PLAN_PROMPT.format(
+        objective=state.objective.raw_text,
+        task_type=task_type.value if hasattr(task_type, "value") else str(task_type),
+        target_column=target_col,
+        candidate_protected_attributes=json.dumps(protected_attrs),
+        column_info=json.dumps(col_info, indent=2)
+    )
+
+    # Fallbacks in case AI call fails
+    skip_fairness = False
+    di_min = DEFAULT_DISPARATE_IMPACT_MIN
+    eod_max = DEFAULT_EOD_MAX
+    auc_deg_max = DEFAULT_AUC_DEGRADATION_MAX_PCT
+    bootstrap_var_max = DEFAULT_BOOTSTRAP_VARIANCE_MAX
+    reasoning = "Using baseline regulations."
+
+    try:
+        plan = get_llm_json(plan_prompt)
+        if plan:
+            protected_attrs = plan.get("protected_attributes_to_audit", protected_attrs)
+            skip_fairness = plan.get("skip_fairness_checks", False)
+            di_min = plan.get("disparate_impact_min", di_min)
+            eod_max = plan.get("equal_opportunity_diff_max", eod_max)
+            auc_deg_max = plan.get("auc_degradation_max_pct", auc_deg_max)
+            bootstrap_var_max = plan.get("bootstrap_variance_max", bootstrap_var_max)
+            reasoning = plan.get("reasoning", reasoning)
+            
+            # Override compliance details in state
+            state.governance_audit.compliance_thresholds = {
+                "disparate_impact_min": di_min,
+                "equal_opportunity_diff_max": eod_max,
+                "auc_degradation_max_pct": auc_deg_max,
+                "bootstrap_variance_max": bootstrap_var_max
+            }
+            state.governance_audit.compliance_reasoning = reasoning
+            log_step_and_broadcast_sync(state, "governance", "Compliance Plan Determined", f"AI compliance officer determined audit thresholds: DI>={di_min}, EOD<={eod_max}. Justification: {reasoning}")
+    except Exception as e:
+        log_step_and_broadcast_sync(state, "governance", "Compliance Plan Determination Failed", f"Could not determine plan via AI: {e}. Falling back to defaults.")
 
     # Prepare processed data (applying feature engineering transformations)
     X_train, X_test, y_train, y_test, X_test_raw = _prepare_audit_data(
@@ -207,11 +321,23 @@ def run_governance(state: PipelineState) -> PipelineState:
     failures = []
 
     # ── Fairness Audit ────────────────────────────────────────────────
-    log_step_and_broadcast_sync(state, "governance", "Fairness Audit Started", f"Checking Disparate Impact and Equal Opportunity Difference against thresholds (DI>={di_min}, EOD<={eod_max})")
-    fairness = _run_fairness_audit(
-        model, df, X_test_raw, X_test, y_test, target_col,
-        protected_attrs, di_min, eod_max, task_type
-    )
+    thresholds = state.governance_audit.compliance_thresholds or {}
+    allow_sensitive_override = thresholds.get("allow_sensitive_features_override", False)
+    
+    if skip_fairness:
+        fairness = FairnessMetrics(status=AuditStatus.SKIPPED)
+        log_step_and_broadcast_sync(state, "governance", "Fairness Audit Bypassed", "Fairness checks bypassed dynamically based on scenario requirements (e.g. physiological predictors).")
+    else:
+        log_step_and_broadcast_sync(state, "governance", "Fairness Audit Started", f"Checking Disparate Impact and Equal Opportunity Difference against thresholds (DI>={di_min}, EOD<={eod_max})")
+        fairness = _run_fairness_audit(
+            model, df, X_test_raw, X_test, y_test, target_col,
+            protected_attrs, di_min, eod_max, task_type
+        )
+        
+        if allow_sensitive_override and fairness.status == AuditStatus.FAIL:
+            fairness.status = AuditStatus.PASS
+            log_step_and_broadcast_sync(state, "governance", "Fairness Audit Override", "Fairness metrics calculated for reporting only; strict thresholds relaxed due to sensitive features override.")
+        
     state.governance_audit.fairness = fairness
     if fairness.status == AuditStatus.FAIL:
         failures.append(_build_fairness_failure_reason(fairness, di_min, eod_max))
@@ -304,6 +430,47 @@ def run_governance(state: PipelineState) -> PipelineState:
         state, "governance", "Governance Audit Complete",
         f"Loop {loop_number} Result: {overall_result}. AI Narrative: {llm_narrative}"
     )
+
+    # ── AI Visual Auditing (Python execution) ──
+    try:
+        from backend.llm.client import get_llm_response
+        import json
+        
+        prompt = _GOVERNANCE_CHART_PROMPT.format(
+            fairness_metrics=json.dumps(fairness.dict(), default=str),
+            robustness_metrics=json.dumps(robustness.dict(), default=str),
+            stability_metrics=json.dumps(stability.dict(), default=str)
+        )
+        raw_code = get_llm_response(prompt)
+        
+        # Clean markdown
+        if "```python" in raw_code:
+            raw_code = raw_code.split("```python")[1].split("```")[0]
+        elif "```" in raw_code:
+            raw_code = raw_code.split("```")[1].split("```")[0]
+        raw_code = raw_code.strip()
+        
+        import tempfile, subprocess, sys, os
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', encoding='utf-8', delete=False) as f:
+            f.write(raw_code)
+            temp_path = f.name
+            
+        try:
+            result = subprocess.run([sys.executable, temp_path], capture_output=True, text=True, encoding='utf-8', timeout=120)
+            if result.returncode == 0:
+                try:
+                    ai_charts = json.loads(result.stdout)
+                    state.governance_audit.ai_charts = ai_charts
+                    log_step_and_broadcast_sync(state, "governance", "AI Governance Charting", f"Successfully generated {len(ai_charts)} visual auditing charts via Python.")
+                except json.JSONDecodeError as je:
+                    log_step_and_broadcast_sync(state, "governance", "AI Governance Charting Failed", f"Failed to parse JSON output: {je}")
+            else:
+                log_step_and_broadcast_sync(state, "governance", "AI Governance Charting Failed", f"Script failed: {result.stderr}")
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+    except Exception as e:
+        log_step_and_broadcast_sync(state, "governance", "AI Governance Charting Failed", f"System error: {e}")
 
     return state
 

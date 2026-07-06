@@ -28,6 +28,15 @@ _GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 _OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 _OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
+_GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+_GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+
+_CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY", "")
+_CEREBRAS_MODEL = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
+
+_GROK_API_KEY = os.getenv("GROK_API_KEY", "")
+_GROK_MODEL = os.getenv("GROK_MODEL", "grok-4.3")
+
 
 # ---------------------------------------------------------------------------
 # Gemini client (lazy-init so import is fast even if key is missing)
@@ -45,13 +54,11 @@ def _get_gemini_client() -> Any:
                 "from https://aistudio.google.com"
             )
         try:
-            import google.generativeai as genai  # type: ignore
-
-            genai.configure(api_key=_GEMINI_API_KEY)
-            _gemini_client = genai.GenerativeModel(_GEMINI_MODEL)
+            from google import genai
+            _gemini_client = genai.Client(api_key=_GEMINI_API_KEY)
         except ImportError as e:
             raise ImportError(
-                "google-generativeai not installed. Run: pip install google-generativeai"
+                "google-genai not installed. Run: pip install google-genai"
             ) from e
     return _gemini_client
 
@@ -97,9 +104,41 @@ def get_llm_response(
         result = _call_gemini(prompt, expect_json=expect_json, retry_on_json_fail=retry_on_json_fail)
     elif _PROVIDER == "ollama":
         result = _call_ollama(prompt, expect_json=expect_json, retry_on_json_fail=retry_on_json_fail)
+    elif _PROVIDER == "groq":
+        result = _call_openai_compatible(
+            prompt,
+            base_url="https://api.groq.com/openai/v1",
+            api_key=_GROQ_API_KEY,
+            model_name=_GROQ_MODEL,
+            expect_json=expect_json,
+            retry_on_json_fail=retry_on_json_fail,
+            temperature=temperature
+        )
+    elif _PROVIDER == "cerebras":
+        result = _call_openai_compatible(
+            prompt,
+            base_url="https://api.cerebras.ai/v1",
+            api_key=_CEREBRAS_API_KEY,
+            model_name=_CEREBRAS_MODEL,
+            expect_json=expect_json,
+            retry_on_json_fail=retry_on_json_fail,
+            temperature=temperature
+        )
+    elif _PROVIDER == "grok":
+        if not _GROK_API_KEY:
+            raise RuntimeError("GROK_API_KEY is not set in .env")
+        result = _call_openai_compatible(
+            prompt,
+            api_key=_GROK_API_KEY,
+            base_url="https://api.x.ai/v1",
+            model_name=_GROK_MODEL,
+            expect_json=expect_json,
+            retry_on_json_fail=retry_on_json_fail,
+            temperature=temperature
+        )
     else:
         raise RuntimeError(
-            f"Unknown LLM_PROVIDER='{_PROVIDER}'. Set LLM_PROVIDER=gemini or ollama in .env."
+            f"Unknown LLM_PROVIDER='{_PROVIDER}'. Supported: gemini, ollama, groq, cerebras, grok."
         )
 
     _LLM_CACHE[prompt_hash] = result
@@ -145,7 +184,10 @@ def _call_gemini(
         )
 
     try:
-        response = client.generate_content(full_prompt)
+        response = client.models.generate_content(
+            model=_GEMINI_MODEL,
+            contents=full_prompt,
+        )
         text = response.text.strip()
 
         if expect_json and retry_on_json_fail:
@@ -159,7 +201,10 @@ def _call_gemini(
                     "No markdown, no backticks, no explanation.\n\n"
                     f"Original task:\n{prompt}"
                 )
-                retry_response = client.generate_content(stricter)
+                retry_response = client.models.generate_content(
+                    model=_GEMINI_MODEL,
+                    contents=stricter,
+                )
                 text = retry_response.text.strip()
 
         return text
@@ -229,6 +274,69 @@ def _call_ollama(
             return text
     except urllib.error.URLError as e:
         raise RuntimeError(f"Ollama API call failed. Is Ollama running on {_OLLAMA_HOST}? Error: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible implementation (Groq, Cerebras)
+# ---------------------------------------------------------------------------
+
+
+def _call_openai_compatible(
+    prompt: str,
+    base_url: str,
+    api_key: str,
+    model_name: str,
+    *,
+    expect_json: bool = False,
+    retry_on_json_fail: bool = True,
+    temperature: float = 0.2,
+) -> str:
+    if not api_key:
+        raise RuntimeError(f"API key missing for provider using {base_url}. Check your .env file.")
+
+    try:
+        from openai import OpenAI
+    except ImportError as e:
+        raise ImportError("openai package not installed. Run: pip install openai") from e
+
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    
+    full_prompt = prompt
+    if expect_json:
+        full_prompt += (
+            "\n\nIMPORTANT: Respond with ONLY valid JSON. Do not include markdown formatting "
+            "like ```json or any explanation text."
+        )
+
+    # Note: Groq supports `response_format={"type": "json_object"}` but Cerebras might not,
+    # so we rely on prompt engineering for universally compatible JSON handling.
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": full_prompt}],
+            temperature=temperature,
+        )
+        text = response.choices[0].message.content.strip()
+
+        if expect_json and retry_on_json_fail:
+            try:
+                _parse_json_safe(text)
+            except ValueError:
+                time.sleep(1)
+                stricter = (
+                    "Your previous response was not valid JSON. Respond with ONLY a JSON object.\n\n"
+                    f"Original task:\n{prompt}"
+                )
+                retry_resp = client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": stricter}],
+                    temperature=temperature,
+                )
+                text = retry_resp.choices[0].message.content.strip()
+
+        return text
+    except Exception as e:
+        raise RuntimeError(f"API call to {base_url} failed: {e}") from e
 
 
 # ---------------------------------------------------------------------------

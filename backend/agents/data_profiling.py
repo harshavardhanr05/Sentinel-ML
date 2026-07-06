@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from backend.llm.client import get_llm_json
+from backend.llm.client import get_llm_json, get_llm_response
 from backend.state.schema import (
     ColumnProfile,
     DataHealthReport,
@@ -37,33 +37,64 @@ from backend.state.store import log_step_and_broadcast_sync
 # ---------------------------------------------------------------------------
 # Prompt Templates
 # ---------------------------------------------------------------------------
-
 _DASHBOARD_CHART_PROMPT = """
-You are an expert Data Visualizer. Given the dataset schema, objective, and correlation/distribution metrics, suggest 3-5 specific charts that would be most insightful for a user to see in their analytics dashboard.
+You are an expert Data Scientist and BI Analyst. Given the dataset schema, user's objective, and correlation metrics, your task is to generate as many highly-diverse, insightful visualizations as possible (minimum 6, up to 10 charts) that a human analyst would find extremely valuable for Exploratory Data Analysis.
 
-CRITICAL: Do NOT output repetitive charts. Every chart MUST use different combinations of dataKeyX and dataKeyY and provide a UNIQUE insight. Do not suggest two charts with the exact same variables (e.g., do not suggest two line charts with the same X and Y).
+For each visualization, you can choose to output EITHER:
+- **Option A (Interactive React UI Chart)**: For simple categorical counts, value scales, and distributions. These are fully interactive and hoverable.
+- **Option B (Static Seaborn/Matplotlib Plot)**: For complex multivariate plots, violin plots, and correlation heatmaps.
 
-Dataset Columns: {columns}
+Write a complete, standalone Python script that:
+1. Loads the dataset from `"{dataset_path}"`.
+2. Computes the summary statistics or processes data for Option A React charts, OR creates a Matplotlib figure and encodes it to base64 for Option B static charts.
+3. Prints a single valid JSON array to `sys.stdout` containing all the charts.
+
+The JSON array must look like this:
+[
+  {{
+    // Option A: Interactive React UI chart
+    "id": "ai-chart-1",
+    "title": "Interactive Age Group Breakdown",
+    "insight": "Doughnut chart showing majority demographic.",
+    "type": "pie" | "doughnut" | "radar" | "bar" | "line" | "area" | "histogram",
+    "data": [
+      // If type is 'pie', 'doughnut', 'radar', or 'bar', use keys 'name' and 'count':
+      {{ "name": "Under 30", "count": 250 }},
+      // If type is 'line' or 'scatter', use keys 'name' and 'correlation':
+      // {{ "name": "feature_x", "correlation": 0.65 }}
+      // If type is 'histogram' or 'area', use keys 'binStart' and 'count':
+      // {{ "binStart": 10.0, "count": 45 }}
+    ]
+  }},
+  {{
+    // Option B: Static Seaborn/Matplotlib plot
+    "id": "ai-chart-2",
+    "title": "Multivariate Correlation Heatmap",
+    "insight": "Complex correlation heatmap across all features.",
+    "imageBase64": "iVBORw0KGgoAAAANSUhEUgAA..." // Base64 encoded PNG
+  }},
+  ...
+]
+
+CRITICAL RULES:
+- **PREREQUISITE (PREFER INTERACTIVE REACT CHARTS)**: You MUST default to **Option A (Interactive React UI Chart)** for any standard plots (such as single-variable counts, correlations, line trends, or basic comparison bar/pie/radar/area/histogram plots). Calculating statistical aggregates using pandas and outputting data arrays is highly preferred.
+- **Option B (Static Seaborn Image)** should ONLY be used when the visualization is physically impossible to construct in Recharts (e.g., a correlation matrix heatmap, a violin plot, or a joint KDE density plot). If a chart can be represented as an Option A chart, you MUST output it as Option A.
+- Do NOT output any markdown blocks like ```python. ONLY output the raw Python code.
+- Ensure the code handles potential missing values or infinite values gracefully.
+- Only print the JSON to stdout. Do not print anything else (no intermediate prints).
+- Make sure to `import sys`, `import json`, `import base64`, `import io`, `import pandas as pd`, `import seaborn as sns`, `import matplotlib.pyplot as plt`, `import numpy as np`.
+- Do NOT use `pd.np` (pandas has no attribute `np`). Use `numpy` directly (e.g. `np.random`).
+- You MUST run `sys.stdout.reconfigure(encoding='utf-8')` right after imports to prevent Windows console encoding errors. Do NOT use `ensure_ascii=False` when calling `json.dump` or `json.dumps`.
+
+User Objective: {user_objective}
 Objective Task: {task_type}
 Target Column: {target_column}
 
+Dataset Columns and Types: 
+{column_info}
+
 Correlations with Target:
 {correlations}
-
-Produce a JSON array of chart objects, each following this exact schema:
-{{
-  "charts": [
-    {{
-      "id": "unique-string",
-      "title": "Short title",
-      "type": "bar" | "line" | "scatter" | "pie",
-      "dataKeyX": "column name for X axis",
-      "dataKeyY": "column name for Y axis (optional)",
-      "insight": "Short plain-language explanation of why this chart is interesting."
-    }}
-  ]
-}}
-Return ONLY JSON.
 """
 
 # ---------------------------------------------------------------------------
@@ -237,15 +268,41 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
 
         if target_col:
             prompt = _DASHBOARD_CHART_PROMPT.format(
-                columns=json.dumps(list(df.columns)),
+                user_objective=state.objective.raw_text,
                 task_type=state.objective.task_type.value,
                 target_column=target_col,
-                correlations=json.dumps(analysis_metrics["numeric_correlations"], indent=2)
+                column_info=json.dumps(col_info, indent=2),
+                correlations=json.dumps(analysis_metrics["numeric_correlations"], indent=2),
+                dataset_path=state.dataset_path
             )
-            res = get_llm_json(prompt)
-            ai_charts = res.get("charts", [])
-            log_step_and_broadcast_sync(state, "data_profiling", "AI chart selection",
-                f"AI recommended {len(ai_charts)} charts for the analytics dashboard.")
+            raw_code = get_llm_response(prompt)
+            
+            # Clean markdown
+            if "```python" in raw_code:
+                raw_code = raw_code.split("```python")[1].split("```")[0]
+            elif "```" in raw_code:
+                raw_code = raw_code.split("```")[1].split("```")[0]
+            raw_code = raw_code.strip()
+            
+            # Execute Python code in a safe subprocess
+            import tempfile, subprocess, sys
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', encoding='utf-8', delete=False) as f:
+                f.write(raw_code)
+                temp_path = f.name
+                
+            try:
+                result = subprocess.run([sys.executable, temp_path], capture_output=True, text=True, encoding='utf-8', timeout=120)
+                if result.returncode == 0:
+                    try:
+                        ai_charts = json.loads(result.stdout)
+                        log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation", f"Successfully generated {len(ai_charts)} AI-driven visual EDA charts via Python script.")
+                    except json.JSONDecodeError as je:
+                        log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation Failed", f"Failed to parse JSON output: {je}")
+                else:
+                    log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation Failed", f"Script failed: {result.stderr}")
+            finally:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
     except Exception:
         pass
 

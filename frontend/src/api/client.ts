@@ -6,8 +6,9 @@
 import axios from 'axios'
 import { useEffect, useRef, useCallback } from 'react'
 
-const API_BASE = (import.meta as any).env.VITE_API_URL || 'http://localhost:8000'
-const WS_BASE = (import.meta as any).env.VITE_WS_URL || 'ws://localhost:8000'
+const API_BASE = (import.meta as any).env.VITE_API_URL || '/api'
+const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+const WS_BASE = (import.meta as any).env.VITE_WS_URL || `${wsProtocol}//${window.location.host}`
 
 export const api = axios.create({
   baseURL: API_BASE,
@@ -58,6 +59,8 @@ export interface GovernanceAudit {
   stability: { metric_variance?: number; metric_std?: number; status: string }
   compliance_checklist: string[]
   compliance_thresholds: Record<string, number>
+  compliance_reasoning?: string
+  ai_charts?: Array<{ id: string; title: string; insight?: string; imageBase64: string }>
   overall_status: string
   failure_reasons: string[]
   loopback_target?: string

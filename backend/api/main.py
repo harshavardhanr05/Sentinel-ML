@@ -20,6 +20,7 @@ Checkpoint protocol is embedded here (POST /runs/{run_id}/decision).
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import uuid
@@ -72,7 +73,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","),
+    allow_origin_regex=".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -180,8 +181,9 @@ async def _run_pipeline_background(run_id: str, dataset_path: str, manager):
 
             # Check if pipeline paused at a checkpoint
             if updated_state and updated_state.is_paused:
-                # Wait for user decision via /runs/{run_id}/decision
-                await _wait_for_decision(run_id)
+                # Do NOT wait here! Just exit the runner.
+                # When the user submits a decision, submit_decision will spawn a new runner.
+                break
 
     except Exception as e:
         state = await load_state(run_id)
@@ -189,17 +191,6 @@ async def _run_pipeline_background(run_id: str, dataset_path: str, manager):
             state.error_message = str(e)
             await save_state(state)
             await manager.broadcast(run_id, state.model_dump(mode="json"))
-
-
-async def _wait_for_decision(run_id: str, poll_interval: float = 1.0, max_wait: int = 3600):
-    """Poll SQLite until is_paused becomes False (user submitted a decision)."""
-    waited = 0
-    while waited < max_wait:
-        await asyncio.sleep(poll_interval)
-        state = await load_state(run_id)
-        if state and not state.is_paused:
-            return
-        waited += poll_interval
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +231,7 @@ async def broadcast_state(run_id: str):
 
 
 @app.post("/runs/{run_id}/decision")
-async def submit_decision(run_id: str, request: DecisionRequest):
+async def submit_decision(run_id: str, request: DecisionRequest, background_tasks: BackgroundTasks):
     """
     Submit a checkpoint decision.
     On approve: clears pending_approval, sets is_paused=False → pipeline resumes.
@@ -439,12 +430,19 @@ if __name__ == "__main__":
                             
                         new_path = state.dataset_path.replace(".csv", "_custom_transformed.csv")
                         
-                        # Execute in subprocess with 150-second timeout
+                        # Calculate dynamic timeout based on dataset size (min 5 minutes, +10s per MB)
+                        try:
+                            file_size_mb = os.path.getsize(state.dataset_path) / (1024 * 1024)
+                            dynamic_timeout = int(max(300, 150 + (file_size_mb * 10)))
+                        except Exception:
+                            dynamic_timeout = 300
+                            
+                        # Execute in subprocess with dynamic timeout
                         result = subprocess.run(
                             [sys.executable, temp_script_path, state.dataset_path, new_path],
                             capture_output=True,
                             text=True,
-                            timeout=150
+                            timeout=dynamic_timeout
                         )
                         
                         os.remove(temp_script_path)
@@ -563,12 +561,19 @@ if __name__ == "__main__":
             state.is_paused = False  # Unblock but mark rejected
             if pending_card:
                 state.mark_stage(pending_card.stage, StageStatus.REJECTED)
+                # If they rejected model_selection, rewind to feature engineering
+                if pending_card.stage == "model_selection":
+                    state.mark_stage("feature_engineering", StageStatus.PENDING)
             state.pending_approval = None
 
     await save_state(state)
 
     # Broadcast updated state via WebSocket
     await ws_manager.broadcast(run_id, state.model_dump(mode="json"))
+
+    # Spawn fresh background runner if pipeline is unpaused
+    if not state.is_paused and not execution_failed_fatally:
+        background_tasks.add_task(_run_pipeline_background, run_id, state.dataset_path, ws_manager)
 
     return {
         "run_id": run_id,
@@ -648,11 +653,50 @@ async def get_model_card(run_id: str):
     if not state:
         raise HTTPException(status_code=404, detail="Run not found")
     if state.model_card_path and os.path.exists(state.model_card_path):
-        return FileResponse(state.model_card_path, media_type="text/markdown")
-    # Generate on-the-fly
-    from backend.agents.reporting import _render_model_card
-    card_md = _render_model_card(state)
-    return PlainTextResponse(card_md, media_type="text/markdown")
+        with open(state.model_card_path, "r", encoding="utf-8") as f:
+            card_md = f.read()
+    else:
+        # Generate on-the-fly
+        from backend.agents.reporting import _render_model_card
+        card_md = _render_model_card(state)
+        
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Model Card - {run_id}</title>
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.5.0/github-markdown-dark.min.css">
+        <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+        <style>
+            body {{
+                box-sizing: border-box;
+                min-width: 200px;
+                max-width: 980px;
+                margin: 0 auto;
+                padding: 45px;
+                background-color: #0d1117;
+            }}
+            .markdown-body {{
+                box-sizing: border-box;
+                min-width: 200px;
+                max-width: 980px;
+                margin: 0 auto;
+                padding: 45px;
+            }}
+        </style>
+    </head>
+    <body class="markdown-body">
+        <div id="content"></div>
+        <script>
+            const markdownContent = {json.dumps(card_md)};
+            document.getElementById('content').innerHTML = marked.parse(markdownContent);
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(html)
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +714,224 @@ async def get_audit_trail(run_id: str):
     from backend.agents.reporting import _render_audit_trail
     html = _render_audit_trail(state)
     return HTMLResponse(html)
+
+
+# ---------------------------------------------------------------------------
+# GET /runs/{run_id}/export
+# ---------------------------------------------------------------------------
+
+def _instantiate_unfitted_model(state: PipelineState):
+    """Instantiate an unfitted model based on the state."""
+    selected = state.selected_model_name or ""
+    task_type = getattr(state.objective.task_type, "value", str(state.objective.task_type)).lower()
+    is_regression = task_type == "regression"
+    
+    if "XGBoost" in selected:
+        import xgboost as xgb
+        if is_regression:
+            return xgb.XGBRegressor(n_estimators=100, verbosity=0, random_state=42)
+        else:
+            return xgb.XGBClassifier(n_estimators=100, verbosity=0, random_state=42, eval_metric="logloss")
+    elif "Random Forest" in selected or "LightGBM" in selected:
+        if is_regression:
+            from sklearn.ensemble import RandomForestRegressor
+            return RandomForestRegressor(n_estimators=100, random_state=42)
+        else:
+            from sklearn.ensemble import RandomForestClassifier
+            return RandomForestClassifier(n_estimators=100, random_state=42)
+    else:
+        if is_regression:
+            from sklearn.linear_model import LinearRegression
+            return LinearRegression()
+        else:
+            from sklearn.linear_model import LogisticRegression
+            return LogisticRegression(max_iter=500, random_state=42)
+
+
+@app.get("/runs/{run_id}/export")
+async def export_model(run_id: str):
+    import joblib
+    from backend.agents.data_profiling import _load_dataset
+    from backend.agents.model_selection import _prepare_data
+    from backend.agents.explainability import _get_model
+
+    state = await load_state(run_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Run not found")
+        
+    if not state.selected_model_name:
+        raise HTTPException(status_code=400, detail="No model selected yet")
+        
+    dataset_path = state.dataset_path
+    if not dataset_path or not os.path.exists(dataset_path):
+        raise HTTPException(status_code=400, detail="Original dataset not found")
+
+    df = _load_dataset(dataset_path)
+    target_col = state.objective.target_column
+    final_features = state.feature_log.final_feature_set
+
+    if not target_col or target_col not in df.columns:
+        raise HTTPException(status_code=400, detail="Target column not found in dataset")
+
+    # Reconstruct the preprocessing logic for the Pipeline
+    from sklearn.compose import ColumnTransformer
+    from sklearn.impute import SimpleImputer
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import OneHotEncoder, StandardScaler, OrdinalEncoder, LabelEncoder
+
+    # Build LabelEncoder if target is categorical
+    y_raw = df[target_col]
+    label_encoder = None
+    if y_raw.dtype == object:
+        label_encoder = LabelEncoder()
+        y_train_full = label_encoder.fit_transform(y_raw.astype(str))
+    else:
+        y_train_full = y_raw.values
+
+    # Determine features
+    df_clean = df.dropna(subset=[target_col]).copy()
+    feature_cols = [c for c in final_features if c in df_clean.columns] if final_features else \
+                   [c for c in df_clean.columns if c != target_col]
+    X_train_full = df_clean[feature_cols].copy()
+
+    # Apply outlier removal on training data BEFORE fitting pipeline
+    if getattr(state.objective, "outlier_removal", "none") == "isolation_forest":
+        from sklearn.ensemble import IsolationForest
+        iso = IsolationForest(contamination=0.05, random_state=42)
+        yhat = iso.fit_predict(X_train_full)
+        mask = yhat != -1
+        X_train_full = X_train_full[mask]
+        y_train_full = y_train_full[mask]
+
+    # Build Transformers
+    ai_strats = state.data_schema.get("ai_strategies", {})
+    transformers = []
+    
+    for col in feature_cols:
+        strat = ai_strats.get(col, {}) or {}
+        imp_strat = (strat.get("imputation_strategy") or "mean").lower()
+        enc_strat = (strat.get("encoding_strategy") or "one_hot").lower()
+        
+        is_cat = str(X_train_full[col].dtype) in ["object", "category"]
+        
+        # Match imputer exactly like model_selection.py
+        if imp_strat == "zero":
+            imputer = SimpleImputer(strategy="constant", fill_value="Unknown") if is_cat else SimpleImputer(strategy="constant", fill_value=0)
+        elif imp_strat == "unknown":
+            imputer = SimpleImputer(strategy="constant", fill_value="Unknown") if is_cat else SimpleImputer(strategy="mean")
+        elif imp_strat == "median":
+            imputer = SimpleImputer(strategy="most_frequent") if is_cat else SimpleImputer(strategy="median")
+        elif imp_strat == "mode":
+            imputer = SimpleImputer(strategy="most_frequent")
+        else:
+            imputer = SimpleImputer(strategy="most_frequent") if is_cat else SimpleImputer(strategy="mean")
+        
+        steps = [("imputer", imputer)]
+        
+        if is_cat:
+            if enc_strat in ["ordinal", "target_encoding"]:
+                steps.append(("encoder", OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)))
+            else:
+                steps.append(("encoder", OneHotEncoder(handle_unknown='ignore', sparse_output=False)))
+        else:
+            scaler_type = getattr(state.objective, "numeric_scaler", "standard")
+            if scaler_type == "robust":
+                from sklearn.preprocessing import RobustScaler
+                steps.append(("scaler", RobustScaler()))
+            elif scaler_type == "minmax":
+                from sklearn.preprocessing import MinMaxScaler
+                steps.append(("scaler", MinMaxScaler()))
+            elif scaler_type == "quantile":
+                from sklearn.preprocessing import QuantileTransformer
+                steps.append(("scaler", QuantileTransformer(output_distribution="uniform", random_state=42)))
+            elif scaler_type == "power":
+                from sklearn.preprocessing import PowerTransformer
+                steps.append(("scaler", PowerTransformer(method="yeo-johnson")))
+            else:
+                steps.append(("scaler", StandardScaler()))
+            
+        transformers.append((col, Pipeline(steps), [col]))
+        
+    preprocessor = ColumnTransformer(transformers=transformers, remainder='drop', verbose_feature_names_out=False)
+    
+    pipeline_steps = [("preprocessor", preprocessor)]
+
+    # Add optional features
+    if state.objective.feature_optimization == "polynomial":
+        from sklearn.preprocessing import PolynomialFeatures
+        pipeline_steps.append(("poly", PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)))
+    elif state.objective.feature_optimization == "pca":
+        from sklearn.decomposition import PCA
+        pipeline_steps.append(("pca", PCA(n_components=0.95, random_state=42)))
+
+    # Apply SMOTE only to training data (NOT to the pipeline since it's for inference)
+    if state.objective.task_type != "regression" and getattr(state.objective, "oversampler_type", "none") != "none":
+        # Pre-transform training data to apply SMOTE
+        # Fit on the FULL source schema so ColumnTransformer can accept the raw dataset during inference!
+        X_source_full = df_clean.drop(columns=[target_col]).copy()
+        X_tmp = preprocessor.fit_transform(X_source_full)
+        if state.objective.feature_optimization == "polynomial":
+            X_tmp = pipeline_steps[-1][1].fit_transform(X_tmp)
+        elif state.objective.feature_optimization == "pca":
+            X_tmp = pipeline_steps[-1][1].fit_transform(X_tmp)
+            
+        oversampler_type = getattr(state.objective, "oversampler_type", "smote")
+        if oversampler_type == "smotetomek":
+            from imblearn.combine import SMOTETomek
+            oversampler = SMOTETomek(random_state=42)
+        elif oversampler_type == "smoteenn":
+            from imblearn.combine import SMOTEENN
+            oversampler = SMOTEENN(random_state=42)
+        else:
+            from imblearn.over_sampling import SMOTE
+            oversampler = SMOTE(random_state=42)
+            
+        try:
+            X_tmp, y_train_full = oversampler.fit_resample(X_tmp, y_train_full)
+            # Re-initialize preprocessor/poly/pca since we already fitted them manually on pre-smote data
+            # Wait, for the final Pipeline to be ready for inference, it must be fit on X_train_full.
+            # But we just did SMOTE on the *transformed* data!
+            # Sklearn Pipelines don't support SMOTE. 
+            # We must fit the model manually on the SMOTE transformed data!
+            model = _get_model(state, X_tmp, y_train_full)
+            if model is None: raise Exception("Model fit failed")
+            pipeline_steps[-1] = (pipeline_steps[-1][0], pipeline_steps[-1][1]) if len(pipeline_steps) > 1 else pipeline_steps[0]
+            pipeline_steps.append(("model", model))
+            final_pipeline = Pipeline(pipeline_steps)
+            
+        except Exception:
+            # Fallback
+            model = _instantiate_unfitted_model(state)
+            pipeline_steps.append(("model", model))
+            final_pipeline = Pipeline(pipeline_steps)
+            final_pipeline.fit(X_source_full, y_train_full)
+    else:
+        model = _instantiate_unfitted_model(state)
+        pipeline_steps.append(("model", model))
+        final_pipeline = Pipeline(pipeline_steps)
+        final_pipeline.fit(X_source_full, y_train_full)
+    # Backwards compatibility for older scikit-learn versions loading LogisticRegression
+    actual_model = final_pipeline.named_steps.get("model")
+    if actual_model is not None and type(actual_model).__name__ == "LogisticRegression":
+        if not hasattr(actual_model, "multi_class"):
+            actual_model.multi_class = "auto"
+
+    # Save to disk as a dict to include label encoder if needed
+    export_obj = {
+        "pipeline": final_pipeline,
+        "target_encoder": label_encoder,
+        "target_column": target_col,
+        "features": feature_cols
+    }
+    
+    model_path = os.path.join(_UPLOAD_DIR, f"{run_id}_model.joblib")
+    joblib.dump(export_obj, model_path)
+
+    return FileResponse(
+        path=model_path,
+        filename=f"sentinel_model.joblib",
+        media_type="application/octet-stream"
+    )
 
 
 # ---------------------------------------------------------------------------

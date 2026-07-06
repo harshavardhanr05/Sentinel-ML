@@ -113,6 +113,11 @@ _MODEL_CARD_TEMPLATE = """
 **Governance loops required:** {{ iteration_count }}
 **Overall Audit Status:** {% if overall_status == 'PASS' %}✅ PASS{% else %}❌ {{ overall_status }}{% endif %}
 
+{% if allow_sensitive_override %}
+> [!NOTE]
+> **Clinical Override Active:** Strict fairness thresholds were relaxed for this model. Metrics are reported for transparency, but they did not block deployment due to the clinical or contextual necessity of the sensitive features in this domain.
+{% endif %}
+
 {% if failure_reasons %}
 **Failure reasons addressed in redesign loops:**
 {% for reason in failure_reasons %}- {{ reason }}
@@ -139,9 +144,9 @@ _MODEL_CARD_TEMPLATE = """
 
 ## 🚀 Final Recommendation
 
-<div style="background-color: {% if recommendation == 'DEPLOY' %}#dcfce7{% else %}#fee2e2{% endif %}; padding: 15px; border-radius: 8px; border-left: 5px solid {% if recommendation == 'DEPLOY' %}#22c55e{% else %}#ef4444{% endif %};">
-  <h3 style="margin-top: 0;">{{ recommendation }}</h3>
-  <p style="margin-bottom: 0;"><strong>Reasoning:</strong> {{ recommendation_reasoning }}</p>
+<div style="background-color: {% if recommendation == 'DEPLOY' %}#dcfce7{% else %}#fee2e2{% endif %}; color: #0f172a; padding: 15px; border-radius: 8px; border-left: 5px solid {% if recommendation == 'DEPLOY' %}#22c55e{% else %}#ef4444{% endif %};">
+  <h3 style="margin-top: 0; color: #0f172a;">{{ recommendation }}</h3>
+  <p style="margin-bottom: 0; color: #0f172a;"><strong>Reasoning:</strong> {{ recommendation_reasoning }}</p>
 </div>
 """
 
@@ -318,6 +323,7 @@ def _render_model_card(state: PipelineState) -> str:
         feature_optimization=getattr(state.objective, "feature_optimization", "None"),
         outlier_removal=getattr(state.objective, "outlier_removal", "None"),
         numeric_scaler=getattr(state.objective, "numeric_scaler", "StandardScaler"),
+        allow_sensitive_override=audit.compliance_thresholds.get("allow_sensitive_features_override", False),
     )
 
 

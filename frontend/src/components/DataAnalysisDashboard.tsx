@@ -9,10 +9,12 @@ import React, { useMemo, useState } from 'react'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, ScatterChart, Scatter, ZAxis,
+  RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
+  AreaChart, Area
 } from 'recharts'
 import {
   Activity, BarChart2, PieChart as PieIcon, TrendingUp,
-  Info, ArrowRight, Zap, Database,
+  Info, ArrowRight, Zap, Database, BarChart as BarChartIcon
 } from 'lucide-react'
 
 interface Props {
@@ -96,6 +98,7 @@ function EmptyState() {
 }
 
 export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) {
+  const [activeLightboxChart, setActiveLightboxChart] = useState<any>(null)
   const {
     ai_charts = [],
     categorical_distributions = {},
@@ -112,23 +115,57 @@ export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) 
 
   // Build charts list (AI-selected or fallback)
   const chartsToRender = useMemo(() => {
-    if (ai_charts.length > 0) return ai_charts
+    const combined: any[] = []
+    
+    // 1. Build individual category and numeric chart objects
+    const catCharts: any[] = []
+    Object.keys(categorical_distributions).slice(0, 15).forEach((col, idx) => {
+      const dist = categorical_distributions[col] || {}
+      const cardinality = Object.keys(dist).length
+      let chartType = 'bar'
+      if (cardinality <= 4) {
+        chartType = idx % 2 === 0 ? 'pie' : 'doughnut'
+      } else {
+        chartType = idx % 2 === 0 ? 'bar' : 'radar'
+      }
+      catCharts.push({ id: `cat-${col}`, title: `${col} Distribution`, type: chartType, dataKeyX: col, insight: `Category breakdown for ${col}.` })
+    })
 
+    const numCharts: any[] = []
+    Object.keys(numeric_histograms).slice(0, 10).forEach((col, idx) => {
+      const chartType = idx % 2 === 0 ? 'histogram' : 'area'
+      numCharts.push({ id: `hist-${col}`, title: `${col} Distribution`, type: chartType, dataKeyX: col, insight: `Value distribution for ${col}.` })
+    })
+
+    // 2. Interleave defaults for storytelling (never show same type consecutive, mix categorical & numeric)
     const defaults: any[] = []
     if (Object.keys(target_distribution).length > 0) {
       defaults.push({ id: 'target-dist', title: `Target Distribution (${targetColumn})`, type: 'pie', dataKeyX: targetColumn, insight: 'Class balance of the target variable.' })
     }
-    Object.keys(categorical_distributions).slice(0, 3).forEach((col) => {
-      defaults.push({ id: `cat-${col}`, title: `${col} Distribution`, type: 'bar', dataKeyX: col, insight: `Category breakdown for ${col}.` })
-    })
-    Object.keys(numeric_histograms).slice(0, 2).forEach((col) => {
-      defaults.push({ id: `hist-${col}`, title: `${col} Distribution`, type: 'histogram', dataKeyX: col, insight: `Value distribution for ${col}.` })
-    })
-    return defaults
+
+    const maxLength = Math.max(catCharts.length, numCharts.length)
+    for (let i = 0; i < maxLength; i++) {
+      if (i < catCharts.length) {
+        defaults.push(catCharts[i])
+      }
+      if (i < numCharts.length) {
+        defaults.push(numCharts[i])
+      }
+    }
+
+    combined.push(...defaults)
+
+    // 3. Then add the complex AI/Python charts if they exist
+    if (ai_charts && ai_charts.length > 0) {
+      combined.push(...ai_charts)
+    }
+    
+    return combined
   }, [ai_charts, target_distribution, categorical_distributions, numeric_histograms, targetColumn])
 
   const getChartData = (chart: any): any[] => {
-    if (chart.type === 'histogram') {
+    if (chart.data) return chart.data
+    if (chart.type === 'histogram' || chart.type === 'area') {
       const hist = numeric_histograms[chart.dataKeyX]
       if (!hist) return []
       return hist.counts.map((count: number, i: number) => ({
@@ -137,7 +174,7 @@ export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) 
         binStart: hist.bins[i],
       }))
     }
-    if (chart.type === 'pie' || chart.type === 'bar') {
+    if (chart.type === 'pie' || chart.type === 'doughnut' || chart.type === 'bar' || chart.type === 'radar') {
       const dist = chart.dataKeyX === targetColumn
         ? target_distribution
         : categorical_distributions[chart.dataKeyX] || {}
@@ -156,11 +193,39 @@ export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) 
   }
 
   const renderChart = (chart: any) => {
+    if (chart.imageBase64) {
+      return (
+        <div key={chart.id} className="bg-surface-800/60 backdrop-blur-md rounded-2xl border border-surface-600/40 shadow-xl hover:shadow-2xl hover:border-brand-500/30 transition-all duration-300 flex flex-col" style={{ height: 420 }}>
+          {/* Header */}
+          <div className="p-5 pb-0 flex-shrink-0">
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-lg bg-brand-600/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <BarChart2 size={16} className="text-brand-400" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-slate-100">{chart.title}</h4>
+                {chart.insight && (
+                  <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5 leading-relaxed">
+                    <Info size={11} className="text-blue-400 flex-shrink-0" />{chart.insight}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+          {/* Chart Image */}
+          <div className="flex-1 min-h-0 p-4 flex items-center justify-center cursor-zoom-in" onClick={() => setActiveLightboxChart(chart)}>
+            <img src={`data:image/png;base64,${chart.imageBase64}`} alt={chart.title} className="max-h-full max-w-full object-contain rounded-lg bg-white/5 hover:scale-[1.01] transition-transform duration-200" style={{ imageRendering: 'auto' }} />
+          </div>
+        </div>
+      )
+    }
+
     const data = getChartData(chart)
     if (!data.length) return null
 
-    const ChartIcon = chart.type === 'pie' ? PieIcon
-      : chart.type === 'histogram' ? BarChart2
+    const ChartIcon = chart.type === 'pie' || chart.type === 'doughnut' ? PieIcon
+      : chart.type === 'histogram' || chart.type === 'area' ? BarChartIcon
+      : chart.type === 'radar' ? Activity
       : chart.type === 'line' ? TrendingUp : BarChart2
 
     return (
@@ -192,13 +257,48 @@ export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) 
                 </Pie>
                 <Tooltip content={<CustomTooltip />} />
               </PieChart>
+            ) : chart.type === 'doughnut' ? (
+              <PieChart>
+                <Pie data={data} cx="50%" cy="50%" innerRadius={45} outerRadius={95} paddingAngle={4} dataKey="count" stroke="none">
+                  {data.map((_: any, i: number) => <Cell key={i} fill={COLORS[(i + 2) % COLORS.length]} />)}
+                </Pie>
+                <Tooltip content={<CustomTooltip />} />
+              </PieChart>
+            ) : chart.type === 'radar' ? (
+              <RadarChart cx="50%" cy="50%" outerRadius="75%" data={data.slice(0, 8)}>
+                <PolarGrid stroke="#334155" />
+                <PolarAngleAxis dataKey="name" tick={{ fill: '#94a3b8', fontSize: 9 }} />
+                <PolarRadiusAxis stroke="#334155" angle={30} domain={[0, 'auto']} tick={{ fill: '#64748b', fontSize: 8 }} />
+                <Radar name="Count" dataKey="count" stroke="#8b5cf6" fill="#8b5cf6" fillOpacity={0.35} />
+                <Tooltip content={<CustomTooltip />} />
+              </RadarChart>
+            ) : chart.type === 'area' ? (
+              <AreaChart data={data} margin={{ top: 0, right: 10, left: 0, bottom: 20 }}>
+                <defs>
+                  <linearGradient id={`grad-${chart.id}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.4}/>
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                <XAxis dataKey="binStart" tickFormatter={(v: number) => v.toFixed(1)} stroke="#94a3b8" fontSize={10} tick={{ fill: '#94a3b8' }} tickLine={false} angle={-30} textAnchor="end" />
+                <YAxis stroke="#94a3b8" fontSize={10} tick={{ fill: '#94a3b8' }} tickLine={false} axisLine={false} />
+                <Tooltip content={<HistogramTooltip />} />
+                <Area type="monotone" dataKey="count" stroke="#10b981" strokeWidth={2} fillOpacity={1} fill={`url(#grad-${chart.id})`} />
+              </AreaChart>
             ) : chart.type === 'histogram' ? (
               <BarChart data={data} margin={{ top: 0, right: 10, left: 0, bottom: 20 }}>
+                <defs>
+                  <linearGradient id={`grad-hist-${chart.id}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#6366f1" stopOpacity={0.8}/>
+                    <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0.4}/>
+                  </linearGradient>
+                </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
                 <XAxis dataKey="binStart" tickFormatter={(v: number) => v.toFixed(1)} stroke="#94a3b8" fontSize={10} tick={{ fill: '#94a3b8' }} tickLine={false} angle={-30} textAnchor="end" />
                 <YAxis stroke="#94a3b8" fontSize={10} tick={{ fill: '#94a3b8' }} tickLine={false} axisLine={false} />
                 <Tooltip content={<HistogramTooltip />} cursor={{ fill: '#334155', opacity: 0.4 }} />
-                <Bar dataKey="count" fill="#6366f1" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="count" fill={`url(#grad-hist-${chart.id})`} radius={[3, 3, 0, 0]} />
               </BarChart>
             ) : chart.type === 'line' ? (
               <LineChart data={data}>
@@ -352,6 +452,21 @@ export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) 
             </div>
           )}
         </>
+      )}
+      {/* Lightbox Modal */}
+      {activeLightboxChart && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-950/80 backdrop-blur-md transition-all duration-300" onClick={() => setActiveLightboxChart(null)}>
+          <div className="relative max-w-6xl w-full bg-surface-900 border border-surface-700/60 rounded-3xl p-6 shadow-2xl flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+            <button className="absolute top-4 right-4 text-slate-400 hover:text-slate-200 text-lg font-bold bg-surface-800 hover:bg-surface-700 w-8 h-8 flex items-center justify-center rounded-lg transition-colors" onClick={() => setActiveLightboxChart(null)}>✕</button>
+            <div>
+              <h3 className="text-lg font-bold text-slate-100 pr-8">{activeLightboxChart.title}</h3>
+              {activeLightboxChart.insight && <p className="text-sm text-slate-400 mt-1">{activeLightboxChart.insight}</p>}
+            </div>
+            <div className="flex-1 bg-white/5 rounded-2xl overflow-hidden flex items-center justify-center p-4 min-h-[400px] max-h-[75vh]">
+              <img src={`data:image/png;base64,${activeLightboxChart.imageBase64}`} alt={activeLightboxChart.title} className="max-h-full max-w-full object-contain rounded-xl" style={{ imageRendering: 'auto' }} />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

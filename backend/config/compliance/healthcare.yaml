@@ -12,6 +12,7 @@ regulations:
 
 # Fairness thresholds — stricter for clinical settings due to patient safety
 fairness_thresholds:
+  allow_sensitive_features_override: true  # Allow clinically relevant sensitive features
   disparate_impact_min: 0.85          # Stricter than generic — clinical equity
   equal_opportunity_diff_max: 0.08    # Tighter TPR gap for diagnostic fairness
   auc_degradation_max_pct: 5.0        # Very low tolerance for distribution shift

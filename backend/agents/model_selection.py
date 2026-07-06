@@ -521,28 +521,33 @@ def _build_leaderboard_entry(
                     y_val_bin = (y_val == classes[1]).astype(int)
                     class_idx = list(model.classes_).index(classes[1]) if hasattr(model, "classes_") else 1
                     entry.auc_roc = round(float(roc_auc_score(y_val_bin, y_proba[:, class_idx])), 4)
+                    
+                    # Calibration curve (requires binary labels)
+                    try:
+                        frac_pos, mean_pred = calibration_curve(y_val_bin, y_proba[:, class_idx], n_bins=10, strategy="quantile")
+                        entry.calibration_curve = [
+                            CalibrationPoint(
+                                bin_mean_predicted=round(float(m), 4),
+                                fraction_of_positives=round(float(f), 4),
+                            )
+                            for m, f in zip(mean_pred, frac_pos)
+                        ]
+                    except Exception:
+                        entry.calibration_curve = []
                 else:
-                    entry.auc_roc = None
-                
-                # Calibration curve (requires 1D probabilities)
-                if len(np.unique(y_val)) == 2:
-                    y_proba_1d = y_proba[:, class_idx]
-                else:
-                    y_proba_1d = y_proba[:, 1] if y_proba.shape[1] > 1 else y_proba[:, 0]
-                # Calibration curve
-                frac_pos, mean_pred = calibration_curve(y_val_bin if len(np.unique(y_val)) == 2 else y_val, y_proba_1d, n_bins=10, strategy="quantile")
-                entry.calibration_curve = [
-                    CalibrationPoint(
-                        bin_mean_predicted=round(float(m), 4),
-                        fraction_of_positives=round(float(f), 4),
-                    )
-                    for m, f in zip(mean_pred, frac_pos)
-                ]
+                    # Multi-class classification AUC
+                    try:
+                        entry.auc_roc = round(float(roc_auc_score(y_val, y_proba, multi_class='ovr', average='weighted')), 4)
+                    except Exception:
+                        entry.auc_roc = None
+                    entry.calibration_curve = []
+            
             y_pred = model.predict(X_val)
             entry.f1_score = round(float(f1_score(y_val, y_pred, average="weighted", zero_division=0)), 4)
             entry.precision = round(float(precision_score(y_val, y_pred, average="weighted", zero_division=0)), 4)
             entry.recall = round(float(recall_score(y_val, y_pred, average="weighted", zero_division=0)), 4)
             entry.accuracy = round(float(accuracy_score(y_val, y_pred)), 4)
+            
             if X_train is not None and y_train is not None:
                 y_train_pred = model.predict(X_train)
                 entry.train_f1_score = round(float(f1_score(y_train, y_train_pred, average="weighted", zero_division=0)), 4)
@@ -553,6 +558,11 @@ def _build_leaderboard_entry(
                         y_train_bin = (y_train == classes[1]).astype(int)
                         class_idx = list(model.classes_).index(classes[1]) if hasattr(model, "classes_") else 1
                         entry.train_auc_roc = round(float(roc_auc_score(y_train_bin, y_train_proba[:, class_idx])), 4)
+                    else:
+                        try:
+                            entry.train_auc_roc = round(float(roc_auc_score(y_train, y_train_proba, multi_class='ovr', average='weighted')), 4)
+                        except Exception:
+                            entry.train_auc_roc = None
         else:
             from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
             y_pred = model.predict(X_val)
@@ -682,7 +692,7 @@ def _prepare_data(
                 
             transformers.append((col, Pipeline(steps), [col]))
             
-        preprocessor = ColumnTransformer(transformers=transformers, remainder='drop')
+        preprocessor = ColumnTransformer(transformers=transformers, remainder='drop', verbose_feature_names_out=False)
         X_processed = preprocessor.fit_transform(X)
         
         # Determine feature names after one-hot encoding

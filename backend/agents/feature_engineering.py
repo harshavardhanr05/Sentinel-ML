@@ -64,43 +64,53 @@ MAX_INTERACTION_TERMS = 2               # Number of top features for interaction
 # ---------------------------------------------------------------------------
 
 _SEMANTIC_FEATURE_PROMPT = """
-You are an expert Data Scientist performing feature selection for a machine learning project.
+You are a Principal Data Scientist and Lead Machine Learning Architect performing feature selection.
 
 Objective: Predict '{target_column}' in a {task_type} task for the '{domain}' domain.
 User Description: "{objective_text}"
 
-You must be EXTREMELY AGGRESSIVE in dropping columns. We want a highly robust, generalizable model. Do not keep columns just because they "might" be related. If a column is a weak predictor, noisy, or its meaning is unclear, you MUST DROP IT.
-This is especially important to prevent overtraining and ensure robustness.
+Your goal is to build a robust, generalizable model by filtering out features that lead to overfitting, noise, or data leakage, while preserving high-value causal predictors.
 
-For each column in the dataset schema below, you must:
-1. Write a SHORT plain-English description of what the column likely represents (1-2 sentences).
-2. Decide if it should be KEPT for modeling or DROPPED.
-3. If dropping, give a clear, specific reason why this column is a bad predictor or would harm the model.
+### Reasoning Process Requirement:
+Before selecting features, you must perform an in-depth domain analysis. For each column, you must explicitly trace the logical causal pathway to the target, and evaluate risks (data leakage, proxy bias, or high-cardinality noise).
 
-Drop a column if it is:
-- A unique ID or row index (e.g. PassengerId, customer_uuid, row_number)
-- Free text or names with no encoded structure (e.g. name, address, description)
-- A timestamp or metadata export column with no predictive relationship to the target
-- Weakly relevant, noisy, or its meaning is unclear for predicting '{target_column}' in the {domain} domain
-- A direct surrogate for the target (data leakage — e.g. a column that is computed from the target)
+#### Domain-Aware & Scenario-Aware Feature Selection Rules:
+1. **Clinical/Medical Context (e.g. disease prediction, health risks):**
+   - Demographic features like `age`, `sex`/`gender`, and physiological metrics (e.g. `blood_pressure`, `cholesterol`) are biologically critical drivers of clinical outcomes. You MUST KEEP them. Do not drop them for bias reasons because biological differences are medically relevant.
+2. **Financial Lending / Employment / Housing Context (e.g. loan defaults, hiring, tenant scoring):**
+   - Demographic features like `gender`, `race`, `religion`, `age` MUST NOT be used for prediction. They represent protected attributes under fair lending and anti-discrimination laws. You MUST DROP them to prevent model bias and legal non-compliance.
+3. **Data Leakage & Target Surrogates (The "Future Information" test):**
+   - Ask yourself: *Is this feature known at the exact moment the model makes its prediction?*
+   - For example, if predicting if a user defaults on a loan, a feature like `recovery_rate` or `last_payment_date` is only populated *after* the loan starts defaulting. This is target leakage! You MUST DROP any feature that is created post-event or directly reflects the target outcome.
+4. **Noisy / Non-Predictive Identifiers:**
+   - Drop columns that are simple database IDs, UUIDs, row numbers, URL links, customer names, or unstructured high-cardinality descriptions unless they can be parsed for real signal.
 
-Keep a column ONLY if:
-- It strongly and logically influences or correlates with '{target_column}' based on strict domain knowledge
-- It provides high-value discriminative signal for the prediction task
+#### Data Leakage Safeguard:
+Ensure no features are "target surrogates" (e.g., columns populated *after* the target event occurs, or columns that directly encode the outcome). If a column is a target surrogate, it MUST be dropped.
+
+#### Noise/Overfitting Safeguard:
+Drop identifiers, high-cardinality descriptive strings, dates with high uniqueness, and noisy metadata.
 
 Schema (column name → data type, number of unique values, sample values):
 {schema}
 
-Respond ONLY with a JSON object in EXACTLY this structure:
+Respond ONLY with a valid JSON object in EXACTLY this structure (no markdown wrappers):
 {{
+  "domain_analysis": {{
+    "key_predictive_drivers": "Causal factors and logical predictive relationships relevant to predicting '{target_column}' in the '{domain}' domain.",
+    "dangerous_features_to_watch_for": "Specific indicators of data leakage (target surrogates), proxy bias, or high-cardinality noise in this dataset schema.",
+    "general_strategy": "Overall feature selection philosophy and guidelines chosen for this specific scenario."
+  }},
   "feature_reasoning": [
     {{
       "column_name": "string",
       "column_description": "What this column represents in 1-2 sentences.",
-      "action": "keep or drop",
-      "reason": "Clear, specific reason (required for both keep and drop). For drop, explain exactly why. For keep, explain the predictive value.",
-      "imputation_strategy": "mean, median, mode, zero, or unknown (required if action is keep)",
-      "encoding_strategy": "one_hot, target_encoding, ordinal, or none (required if action is keep)"
+      "logical_connection": "The logical/causal pathway showing how changes in this column influence or correlate with '{target_column}' (e.g. 'higher revolving balance directly increases financial leverage and probability of default').",
+      "risk_evaluation": "A critical risk analysis evaluating if this feature poses risks of data leakage (populated post-target event), overfitting (high cardinality/noise), or proxy-bias.",
+      "action": "keep" | "drop",
+      "reason": "Comprehensive, technical justification for keeping or dropping.",
+      "imputation_strategy": "mean" | "median" | "mode" | "zero" | "unknown" (required if action is keep, otherwise null),
+      "encoding_strategy": "one_hot" | "target_encoding" | "ordinal" | "none" (required if action is keep, otherwise null)
     }}
   ]
 }}
@@ -178,6 +188,8 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
             col_desc = item.get("column_description", "").strip()
             imputation = item.get("imputation_strategy")
             encoding = item.get("encoding_strategy")
+            logical_connection = item.get("logical_connection", "").strip()
+            risk_evaluation = item.get("risk_evaluation", "").strip()
             
             if not reason:
                 reason = "Retained based on domain and objective relevance."
@@ -188,6 +200,8 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
                     full_reason = f"AI Semantic Filter: {reason}"
                     if col_desc:
                         full_reason = f"{col_desc} — {reason}"
+                    if risk_evaluation:
+                        full_reason = f"{full_reason} [Risk Analysis: {risk_evaluation}]"
                     rejected.append(FeatureLogEntry(
                         feature=c,
                         transformation="drop",
@@ -205,10 +219,12 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
                         "encoding_strategy": encoding,
                         "semantic_reason": reason,
                         "column_description": col_desc,
+                        "logical_connection": logical_connection,
+                        "risk_evaluation": risk_evaluation,
                     }
                     log_step_and_broadcast_sync(
                         state, "feature_engineering", f"AI retained '{c}'",
-                        f"{col_desc} | {reason} | Imputation: {imputation} | Encoding: {encoding}"
+                        f"{col_desc} | Connection: {logical_connection} | Risk: {risk_evaluation} | Imputation: {imputation} | Encoding: {encoding}"
                     )
 
     except Exception as e:
@@ -292,19 +308,23 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
 
     remaining_cols = [c for c in df.columns if c != target_col]
     proxy_flags: Dict[str, str] = {}
-    for col in remaining_cols:
-        if col in protected_attrs:
-            continue
-        flag_reason = quick_fairness_proxy_check(df, col, protected_attrs)
-        if flag_reason:
-            proxy_flags[col] = flag_reason
+    
+    allow_sensitive_override = state.governance_audit.compliance_thresholds.get("allow_sensitive_features_override", False)
+    
+    if not allow_sensitive_override:
+        for col in remaining_cols:
+            if col in protected_attrs:
+                continue
+            flag_reason = quick_fairness_proxy_check(df, col, protected_attrs)
+            if flag_reason:
+                proxy_flags[col] = flag_reason
 
     # ── Step 5: Propose and evaluate transformations ──────────────────
     feature_set = [c for c in remaining_cols if c not in proxy_flags]
 
     # If we failed governance previously (loopback), explicitly drop the protected attributes
-    # to fix the Fairness FAIL (Disparate Impact).
-    if state.governance_audit.iteration_count > 0:
+    # to fix the Fairness FAIL (Disparate Impact), UNLESS clinical override is active.
+    if state.governance_audit.iteration_count > 0 and not allow_sensitive_override:
         for p_attr in protected_attrs:
             if p_attr in feature_set:
                 feature_set.remove(p_attr)
@@ -323,6 +343,11 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
         is_categorical = not is_numeric
         unique_count = series.nunique(dropna=True)
 
+        # Retrieve AI strategies
+        ai_strat = state.data_schema.get("ai_strategies", {}).get(col, {}) or {}
+        has_nulls = series.isna().any()
+        imputation_strategy = (ai_strat.get("imputation_strategy") or ("mean" if is_numeric else "mode")).lower() if has_nulls else "none"
+
         transform_applied, transform_label, new_col_name = None, None, col
 
         if is_numeric:
@@ -340,17 +365,20 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
                         feature=col, transformation=transform_label, status="accepted",
                         reason=f"Log transform improved metric by {delta:+.4f} (skewness was {skew:.2f})",
                         metric_delta=round(delta, 4),
+                        imputation_strategy=imputation_strategy,
                     ))
                 else:
                     accepted.append(FeatureLogEntry(
                         feature=col, transformation="keep_as_is", status="accepted",
                         reason=f"Kept as-is: log transform showed no improvement ({delta:+.4f})",
                         metric_delta=round(delta, 4),
+                        imputation_strategy=imputation_strategy,
                     ))
             else:
                 accepted.append(FeatureLogEntry(
                     feature=col, transformation="keep_as_is", status="accepted",
                     reason="Numeric feature retained as-is (no significant skewness).",
+                    imputation_strategy=imputation_strategy,
                 ))
 
         elif is_categorical:
@@ -358,11 +386,13 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
                 accepted.append(FeatureLogEntry(
                     feature=col, transformation="one_hot_encoding", status="accepted",
                     reason=f"One-hot encoding applied ({unique_count} unique values ≤ {LOW_CARDINALITY_THRESHOLD} threshold).",
+                    imputation_strategy=imputation_strategy,
                 ))
             else:
                 accepted.append(FeatureLogEntry(
                     feature=col, transformation="frequency_encoding", status="accepted",
                     reason=f"Frequency encoding applied (high cardinality: {unique_count} unique values).",
+                    imputation_strategy=imputation_strategy,
                 ))
 
     # ── Step 6: Log governance-flagged proxies as rejected ─────────────
@@ -447,7 +477,7 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
     
     # Calculate imputation/encoding stats for logging
     imputed_count = len([e for e in accepted if e.imputation_strategy and e.imputation_strategy != "none"])
-    encoded_count = len([e for e in accepted if e.transformation in ["one_hot", "target_encode", "frequency_encode"]])
+    encoded_count = len([e for e in accepted if e.transformation in ["one_hot", "one_hot_encoding", "target_encode", "target_encoding", "frequency_encode", "frequency_encoding"]])
     
     log_step_and_broadcast_sync(state, "feature_engineering", "Feature Transformation Summary", f"Finalized {len(final_features)} features. Applied missing value imputation to {imputed_count} features, and categorical encoding to {encoded_count} features.")
 

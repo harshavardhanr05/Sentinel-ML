@@ -284,6 +284,7 @@ class GovernanceAudit(BaseModel):
     fairness: FairnessMetrics = Field(default_factory=FairnessMetrics)
     robustness: RobustnessMetrics = Field(default_factory=RobustnessMetrics)
     stability: StabilityMetrics = Field(default_factory=StabilityMetrics)
+    ai_charts: List[Any] = Field(default_factory=list, description="AI-generated auditing visualizations (base64 PNGs)")
     compliance_checklist: List[str] = Field(
         default_factory=list,
         description="Regulation codes injected by Compliance Agent (e.g. ECOA_0.80_rule)",
@@ -291,6 +292,10 @@ class GovernanceAudit(BaseModel):
     compliance_thresholds: Dict[str, Any] = Field(
         default_factory=dict,
         description="Injected from YAML: {disparate_impact_min: 0.80, ...}",
+    )
+    compliance_reasoning: Optional[str] = Field(
+        default=None,
+        description="AI-generated reasoning for the dynamic governance audit thresholds and plan."
     )
     overall_status: AuditStatus = AuditStatus.NOT_RUN
     failure_reasons: List[str] = Field(
