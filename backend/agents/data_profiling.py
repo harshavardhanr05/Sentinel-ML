@@ -71,7 +71,7 @@ CRITICAL RULES:
 - Do NOT output any markdown blocks like ```python. ONLY output the raw Python code.
 - Ensure the code handles potential missing values or infinite values gracefully. DO NOT use `sys.exit()` or exit early under any circumstances.
 - Do NOT encode categorical variables into numbers (like LabelEncoder) before aggregating for charts. Keep original string labels (e.g., 'Male', 'Female', 'Yes') so they remain informative in the UI.
-- You MUST explicitly call `print(json.dumps(charts))` at the end of the script to output the data. Do NOT use `json.dump` directly on `sys.stdout`.
+- **ABSOLUTELY CRITICAL**: You MUST explicitly call `print(json.dumps(charts))` at the very end of the script to output the data. If you do not print the final JSON array, the script will fail!
 - Only print the JSON to stdout. Do not print anything else (no intermediate prints).
 - Make sure to `import sys`, `import json`, `import pandas as pd`, `import numpy as np`.
 - Do NOT use `pd.np` (pandas has no attribute `np`). Use `numpy` directly (e.g. `np.random`).
@@ -86,6 +86,8 @@ Dataset Columns and Types:
 
 Correlations with Target:
 {correlations}
+
+CRITICAL FINAL REMINDER: Your code MUST end with `print(json.dumps(charts))` where `charts` is your final list of dictionary objects. DO NOT FORGET TO PRINT.
 """
 
 # ---------------------------------------------------------------------------

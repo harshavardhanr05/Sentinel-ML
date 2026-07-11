@@ -8,7 +8,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   LineChart, Line, CartesianGrid, Legend,
   RadialBarChart, RadialBar,
-  PieChart, Pie, Cell,
+  PieChart, Pie, Cell
 } from 'recharts'
 import { ShieldCheck, ShieldAlert, TrendingUp, Activity, ChevronDown, ChevronRight, CheckCircle, XCircle, RefreshCw, Info } from 'lucide-react'
 import type { ModelLeaderboardEntry, GovernanceAudit } from '../api/client'
@@ -274,10 +274,28 @@ export default function InsightDashboard({ leaderboard, governance, featureImpor
                       <ResponsiveContainer width="100%" height={200}>
                         {chart.type === 'pie' || chart.type === 'doughnut' ? (
                           <PieChart>
-                            <Pie data={chart.data} cx="50%" cy="50%" innerRadius={chart.type === 'doughnut' ? 35 : 0} outerRadius={70} paddingAngle={4} dataKey="count" stroke="none">
-                              {chart.data.map((_: any, i: number) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                            <defs>
+                              {COLORS.map((color, i) => (
+                                <linearGradient id={`insight-pie-${chart.id}-${i}`} x1="0" y1="0" x2="0.8" y2="1" key={i}>
+                                  <stop offset="0%" stopColor={color} stopOpacity={1} />
+                                  <stop offset="100%" stopColor={color} stopOpacity={0.6} />
+                                </linearGradient>
+                              ))}
+                              <filter id={`insight-shadow-${chart.id}`} x="-20%" y="-20%" width="140%" height="140%">
+                                <feDropShadow dx="2" dy="5" stdDeviation="5" floodOpacity="0.4" floodColor="#000000" />
+                              </filter>
+                            </defs>
+                            <Pie 
+                              data={chart.data} cx="50%" cy="50%" 
+                              innerRadius={chart.type === 'doughnut' ? 35 : 0} outerRadius={65} 
+                              paddingAngle={5} dataKey="count" 
+                              stroke="rgba(255,255,255,0.08)" strokeWidth={1.5}
+                              filter={`url(#insight-shadow-${chart.id})`}
+                            >
+                              {chart.data.map((_: any, i: number) => <Cell key={i} fill={`url(#insight-pie-${chart.id}-${i % COLORS.length})`} />)}
                             </Pie>
                             <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 8, color: '#e2e8f0', fontSize: 11 }} />
+                            <Legend layout="horizontal" verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: '11px', paddingTop: '15px' }} />
                           </PieChart>
                         ) : chart.type === 'line' ? (
                           <LineChart data={chart.data}>

@@ -46,6 +46,9 @@ export default function DecisionCard({ runId, card, realtimeLogs, onDecisionMade
       if (result.ai_execution_logs) {
         setAiExecutionLogs(result.ai_execution_logs)
       }
+      if (action === 'counter_propose') {
+        setCounterNote('')
+      }
       onDecisionMade(result.agent_justification)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Failed to submit decision')

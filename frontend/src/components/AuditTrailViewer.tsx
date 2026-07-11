@@ -9,7 +9,7 @@ import React, { useState, useMemo } from 'react'
 import {
   Clock, Bot, User, CheckCircle, XCircle, MessageSquare, AlertTriangle,
   Zap, Activity, ChevronDown, ChevronRight, Filter, Database, ShieldX, Link, 
-  FlaskConical, Layers,
+  FlaskConical, Layers, ShieldCheck,
 } from 'lucide-react'
 import type { DecisionLogEntry } from '../api/client'
 import clsx from 'clsx'
@@ -27,6 +27,9 @@ export interface AgentStep {
   fix_method?: string
   ai_summary?: string
   ai_technique?: string
+  problem?: string
+  reasoning?: string
+  conclusion?: string
 }
 
 interface Props {
@@ -88,6 +91,7 @@ function stageDot(stage: string) {
 
 export function stepIcon(stepName: string, stage: string) {
   const lower = stepName.toLowerCase()
+  if (lower.includes('failsafe')) return <ShieldCheck size={13} className="text-brand-400" />
   if (lower.includes('fail') || lower.includes('error')) return <XCircle size={13} className="text-red-400" />
   if (lower.includes('complete') || lower.includes('selected') || lower.includes('trained')) return <CheckCircle size={13} className="text-emerald-400" />
   if (lower.includes('smote') || lower.includes('resam')) return <Zap size={13} className="text-emerald-400" />
@@ -262,6 +266,29 @@ export function ActivityStep({ step, isLast }: { step: AgentStep; isLast: boolea
                     </summary>
                     <pre className="mt-2 overflow-x-auto font-mono text-brand-300 text-[10px]">{step.fixed_code}</pre>
                   </details>
+                )}
+              </div>
+            )}
+
+            {(step.problem || step.reasoning || step.conclusion) && (
+              <div className="mt-4 space-y-3 border-t border-surface-600/30 pt-3">
+                {step.problem && (
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider flex items-center gap-1.5"><Activity size={10} className="text-orange-400"/> Context / Problem</span>
+                    <p className="text-sm text-slate-300 mt-1 leading-relaxed">{step.problem}</p>
+                  </div>
+                )}
+                {step.reasoning && (
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-500 tracking-wider flex items-center gap-1.5"><Bot size={10} className="text-brand-400"/> AI Reasoning & Tradeoffs</span>
+                    <p className="text-sm text-slate-400 mt-1 leading-relaxed whitespace-pre-wrap">{step.reasoning}</p>
+                  </div>
+                )}
+                {step.conclusion && (
+                  <div className="bg-emerald-900/10 border border-emerald-800/30 rounded-lg p-2.5 mt-2">
+                    <span className="text-[10px] font-bold uppercase text-emerald-400 tracking-wider flex items-center gap-1.5"><CheckCircle size={10} /> Conclusion</span>
+                    <p className="text-sm text-emerald-200/80 mt-1 font-medium">{step.conclusion}</p>
+                  </div>
                 )}
               </div>
             )}

@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
-
 import numpy as np
 import pandas as pd
+import json
+
 from sklearn.calibration import calibration_curve
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -38,6 +39,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
+from backend.llm.client import get_llm_json
 
 warnings.filterwarnings("ignore")
 
@@ -235,6 +237,70 @@ def run_model_selection(state: PipelineState) -> PipelineState:
         except Exception as e:
             log_step_and_broadcast_sync(state,"model_selection", "LightGBM FAILED", str(e))
 
+    try:
+        svm_m = _train_svm(X_train, X_val, y_train, y_val, task_type)
+        candidates.append(svm_m)
+        log_step_and_broadcast_sync(state,"model_selection", "SVM trained", _fmt(svm_m))
+    except Exception as e:
+        log_step_and_broadcast_sync(state,"model_selection", "SVM FAILED", str(e))
+
+    try:
+        mlp_m = _train_mlp(X_train, X_val, y_train, y_val, task_type, state)
+        candidates.append(mlp_m)
+        log_step_and_broadcast_sync(state,"model_selection", "MLP trained", _fmt(mlp_m))
+    except Exception as e:
+        log_step_and_broadcast_sync(state,"model_selection", "MLP FAILED", str(e))
+
+    try:
+        vot_m = _train_voting_ensemble(X_train, X_val, y_train, y_val, task_type)
+        candidates.append(vot_m)
+        log_step_and_broadcast_sync(state,"model_selection", "Voting Ensemble trained", _fmt(vot_m))
+    except Exception as e:
+        log_step_and_broadcast_sync(state,"model_selection", "Voting Ensemble FAILED", str(e))
+
+    if _HAS_LGB and _HAS_XGB:
+        try:
+            stk_m = _train_stacking_ensemble(X_train, X_val, y_train, y_val, task_type)
+            candidates.append(stk_m)
+            log_step_and_broadcast_sync(state,"model_selection", "Stacking Ensemble trained", _fmt(stk_m))
+        except Exception as e:
+            log_step_and_broadcast_sync(state,"model_selection", "Stacking Ensemble FAILED", str(e))
+
+    try:
+        dt_m = _train_decision_tree(X_train, X_val, y_train, y_val, task_type)
+        candidates.append(dt_m)
+        log_step_and_broadcast_sync(state,"model_selection", "Decision Tree trained", _fmt(dt_m))
+    except Exception as e:
+        log_step_and_broadcast_sync(state,"model_selection", "Decision Tree FAILED", str(e))
+
+    try:
+        ada_m = _train_adaboost(X_train, X_val, y_train, y_val, task_type)
+        candidates.append(ada_m)
+        log_step_and_broadcast_sync(state,"model_selection", "AdaBoost trained", _fmt(ada_m))
+    except Exception as e:
+        log_step_and_broadcast_sync(state,"model_selection", "AdaBoost FAILED", str(e))
+
+    try:
+        nb_m = _train_naive_bayes_or_elasticnet(X_train, X_val, y_train, y_val, task_type)
+        candidates.append(nb_m)
+        log_step_and_broadcast_sync(state,"model_selection", f"{nb_m.model_name} trained", _fmt(nb_m))
+    except Exception as e:
+        log_step_and_broadcast_sync(state,"model_selection", "NB/ElasticNet FAILED", str(e))
+
+    try:
+        hgb_m = _train_hist_gradient_boosting(X_train, X_val, y_train, y_val, task_type)
+        candidates.append(hgb_m)
+        log_step_and_broadcast_sync(state,"model_selection", "HistGradientBoosting trained", _fmt(hgb_m))
+    except Exception as e:
+        log_step_and_broadcast_sync(state,"model_selection", "HistGradientBoosting FAILED", str(e))
+
+    try:
+        qda_m = _train_qda_or_huber(X_train, X_val, y_train, y_val, task_type)
+        candidates.append(qda_m)
+        log_step_and_broadcast_sync(state,"model_selection", f"{qda_m.model_name} trained", _fmt(qda_m))
+    except Exception as e:
+        log_step_and_broadcast_sync(state,"model_selection", "QDA/Huber FAILED", str(e))
+
     log_step_and_broadcast_sync(state,"model_selection", "Training complete", f"{len(candidates)} models trained successfully.")
 
     # ── Optuna tuning on top-2 by AUC ─────────────────────────────────
@@ -399,9 +465,199 @@ def _train_knn(
     else:
         model = KNeighborsClassifier(n_neighbors=5, n_jobs=-1)
     model.fit(X_train, y_train)
-    return _build_leaderboard_entry(model, "K-Nearest Neighbors", "instance_based", X_val, y_val, task_type,
+    return _build_leaderboard_entry(model, "KNN", "nearest_neighbors", X_val, y_val, task_type,
         hyperparameters={"n_neighbors": 5}, X_train=X_train, y_train=y_train)
 
+
+def _train_svm(
+    X_train, X_val, y_train, y_val, task_type: str
+) -> ModelLeaderboardEntry:
+    from sklearn.svm import SVC, SVR
+    if task_type in (TaskType.REGRESSION, "regression"):
+        model = SVR(C=1.0)
+    else:
+        model = SVC(C=1.0, probability=True, random_state=42)
+    model.fit(X_train, y_train)
+    return _build_leaderboard_entry(model, "SVM", "svm", X_val, y_val, task_type,
+        hyperparameters={"C": 1.0}, X_train=X_train, y_train=y_train)
+
+
+def _train_mlp(
+    X_train, X_val, y_train, y_val, task_type: str, state: PipelineState
+) -> ModelLeaderboardEntry:
+    from sklearn.neural_network import MLPClassifier, MLPRegressor
+    from backend.state.store import log_step_and_broadcast_sync
+    
+    num_samples = X_train.shape[0] if hasattr(X_train, "shape") else len(X_train)
+    num_features = X_train.shape[1] if hasattr(X_train, "shape") else len(X_train[0])
+    
+    prompt = f"""
+You are an expert Deep Learning Architect. We are building a Multi-Layer Perceptron (MLP) for a {task_type} task.
+The training dataset has {num_samples} samples and {num_features} features.
+
+Propose an optimal, yet computationally efficient hidden layer architecture and learning rate for this specific shape. 
+Avoid excessively large networks to prevent overfitting and ensure fast training.
+
+Output valid JSON ONLY in this exact format:
+{{
+  "hidden_layer_sizes": [100, 50],
+  "learning_rate_init": 0.001,
+  "reasoning": "brief string explaining why"
+}}
+"""
+    try:
+        llm_response = get_llm_json(prompt)
+        hidden_layer_sizes = tuple(llm_response.get("hidden_layer_sizes", [100, 50]))
+        learning_rate_init = float(llm_response.get("learning_rate_init", 0.001))
+        reasoning = llm_response.get("reasoning", "Default fallback used.")
+        
+        log_step_and_broadcast_sync(
+            state, "model_selection", "AI Neural Architecture Designed", 
+            f"Designed MLP for {num_samples}x{num_features} dataset: Layers {hidden_layer_sizes}, LR {learning_rate_init}.",
+            problem=f"Determine optimal neural network topology for {num_samples} rows and {num_features} columns.",
+            reasoning=reasoning,
+            conclusion=f"hidden_layer_sizes={hidden_layer_sizes}, learning_rate_init={learning_rate_init}"
+        )
+    except Exception as e:
+        hidden_layer_sizes = (100, 50)
+        learning_rate_init = 0.001
+        
+    if task_type in (TaskType.REGRESSION, "regression"):
+        model = MLPRegressor(hidden_layer_sizes=hidden_layer_sizes, learning_rate_init=learning_rate_init, max_iter=500, random_state=42)
+    else:
+        model = MLPClassifier(hidden_layer_sizes=hidden_layer_sizes, learning_rate_init=learning_rate_init, max_iter=500, random_state=42)
+    
+    model.fit(X_train, y_train)
+    return _build_leaderboard_entry(model, "MLP Neural Network", "neural_network", X_val, y_val, task_type,
+        hyperparameters={"hidden_layer_sizes": hidden_layer_sizes, "lr": learning_rate_init}, X_train=X_train, y_train=y_train)
+
+
+def _train_voting_ensemble(
+    X_train, X_val, y_train, y_val, task_type: str
+) -> ModelLeaderboardEntry:
+    from sklearn.ensemble import VotingClassifier, VotingRegressor, RandomForestClassifier, RandomForestRegressor
+    from sklearn.linear_model import LogisticRegression, LinearRegression
+    if task_type in (TaskType.REGRESSION, "regression"):
+        est = [
+            ("lr", LinearRegression()),
+            ("rf", RandomForestRegressor(n_estimators=50, random_state=42)),
+            ("xgb", xgb.XGBRegressor(n_estimators=50, random_state=42, verbosity=0))
+        ]
+        model = VotingRegressor(estimators=est)
+    else:
+        est = [
+            ("lr", LogisticRegression(max_iter=1000, random_state=42)),
+            ("rf", RandomForestClassifier(n_estimators=50, random_state=42)),
+            ("xgb", xgb.XGBClassifier(n_estimators=50, random_state=42, verbosity=0, eval_metric="logloss", use_label_encoder=False))
+        ]
+        model = VotingClassifier(estimators=est, voting="soft")
+        
+    model.fit(X_train, y_train)
+    return _build_leaderboard_entry(model, "Voting Ensemble", "hybrid", X_val, y_val, task_type,
+        hyperparameters={"estimators": "LR + RF + XGB"}, X_train=X_train, y_train=y_train)
+
+
+def _train_stacking_ensemble(
+    X_train, X_val, y_train, y_val, task_type: str
+) -> ModelLeaderboardEntry:
+    from sklearn.ensemble import StackingClassifier, StackingRegressor, RandomForestClassifier, RandomForestRegressor
+    from sklearn.linear_model import LogisticRegression, Ridge
+    if task_type in (TaskType.REGRESSION, "regression"):
+        est = [
+            ("rf", RandomForestRegressor(n_estimators=50, random_state=42)),
+            ("lgb", lgb.LGBMRegressor(n_estimators=50, random_state=42, verbose=-1))
+        ]
+        model = StackingRegressor(estimators=est, final_estimator=Ridge())
+    else:
+        est = [
+            ("rf", RandomForestClassifier(n_estimators=50, random_state=42)),
+            ("lgb", lgb.LGBMClassifier(n_estimators=50, random_state=42, verbose=-1))
+        ]
+        model = StackingClassifier(estimators=est, final_estimator=LogisticRegression(max_iter=1000, random_state=42))
+        
+    model.fit(X_train, y_train)
+    return _build_leaderboard_entry(model, "Stacking Ensemble", "hybrid", X_val, y_val, task_type,
+        hyperparameters={"base": "RF + LGB", "meta": "Linear"}, X_train=X_train, y_train=y_train)
+
+
+def _train_adaboost(
+    X_train, X_val, y_train, y_val, task_type: str
+) -> ModelLeaderboardEntry:
+    from sklearn.ensemble import AdaBoostClassifier, AdaBoostRegressor
+    if task_type in (TaskType.REGRESSION, "regression"):
+        model = AdaBoostRegressor(n_estimators=50, random_state=42)
+    else:
+        model = AdaBoostClassifier(n_estimators=50, random_state=42)
+    model.fit(X_train, y_train)
+    return _build_leaderboard_entry(model, "AdaBoost", "boosting", X_val, y_val, task_type,
+        hyperparameters={"n_estimators": 50}, X_train=X_train, y_train=y_train)
+
+
+def _train_decision_tree(
+    X_train, X_val, y_train, y_val, task_type: str
+) -> ModelLeaderboardEntry:
+    from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+    if task_type in (TaskType.REGRESSION, "regression"):
+        model = DecisionTreeRegressor(random_state=42)
+    else:
+        model = DecisionTreeClassifier(random_state=42)
+    model.fit(X_train, y_train)
+    return _build_leaderboard_entry(model, "Decision Tree", "tree", X_val, y_val, task_type,
+        hyperparameters={"criterion": "default"}, X_train=X_train, y_train=y_train)
+
+
+def _train_naive_bayes_or_elasticnet(
+    X_train, X_val, y_train, y_val, task_type: str
+) -> ModelLeaderboardEntry:
+    if task_type in (TaskType.REGRESSION, "regression"):
+        from sklearn.linear_model import ElasticNet
+        model = ElasticNet(random_state=42)
+        name, family = "ElasticNet", "linear"
+    else:
+        from sklearn.naive_bayes import GaussianNB
+        model = GaussianNB()
+        name, family = "Gaussian Naive Bayes", "naive_bayes"
+    model.fit(X_train, y_train)
+    return _build_leaderboard_entry(model, name, family, X_val, y_val, task_type,
+        hyperparameters={}, X_train=X_train, y_train=y_train)
+
+def _train_hist_gradient_boosting(
+    X_train, X_val, y_train, y_val, task_type: str
+) -> ModelLeaderboardEntry:
+    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+    if task_type in (TaskType.REGRESSION, "regression"):
+        model = HistGradientBoostingRegressor(max_iter=100, random_state=42)
+    else:
+        model = HistGradientBoostingClassifier(max_iter=100, random_state=42)
+    model.fit(X_train, y_train)
+    return _build_leaderboard_entry(model, "HistGradientBoosting", "gradient_boosting", X_val, y_val, task_type,
+        hyperparameters={"max_iter": 100}, X_train=X_train, y_train=y_train)
+
+
+def _train_qda_or_huber(
+    X_train, X_val, y_train, y_val, task_type: str
+) -> ModelLeaderboardEntry:
+    if task_type in (TaskType.REGRESSION, "regression"):
+        from sklearn.linear_model import HuberRegressor
+        model = HuberRegressor()
+        name, family = "Huber Regressor (Robust)", "linear"
+    else:
+        from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis, LinearDiscriminantAnalysis
+        try:
+            model = QuadraticDiscriminantAnalysis(reg_param=0.1)
+            model.fit(X_train, y_train)
+            name, family = "QDA", "discriminant_analysis"
+        except Exception:
+            # Fallback to LDA if classes are too small (e.g. Wine Quality class 3 has only 9 samples)
+            model = LinearDiscriminantAnalysis(solver='eigen', shrinkage='auto')
+            model.fit(X_train, y_train)
+            name, family = "LDA (Shrinkage Fallback)", "discriminant_analysis"
+            
+    if task_type in (TaskType.REGRESSION, "regression"):
+        model.fit(X_train, y_train)
+
+    return _build_leaderboard_entry(model, name, family, X_val, y_val, task_type,
+        hyperparameters={}, X_train=X_train, y_train=y_train)
 
 # ---------------------------------------------------------------------------
 # Optuna hyperparameter search

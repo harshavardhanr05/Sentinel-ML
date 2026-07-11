@@ -73,38 +73,89 @@ Your goal is to build a robust, generalizable model by filtering out features th
 
 ### Deep Reasoning Process Requirement:
 This is one of the most crucial parts of the ML system. You must perform an in-depth, adaptive reasoning process tailored to the specific dataset domain.
-Before selecting features, explicitly trace the logical causal pathway to the target. For every single column, evaluate if introducing or removing it makes actual sense in real-world deployment.
 
-#### Adaptive Scenario-Aware Feature Selection Rules:
-1. **Clinical/Medical Context (e.g. disease prediction, health risks):**
-   - Demographic features like `age`, `sex`/`gender`, and physiological metrics (e.g. `blood_pressure`) are biologically critical drivers. You MUST KEEP them. Do not drop them for bias reasons.
-2. **Financial/Employment/Housing (e.g. loan defaults, hiring, tenant scoring):**
-   - Demographics like `gender`, `race`, `religion`, `age` MUST NOT be used. They represent protected attributes under fair lending and anti-discrimination laws. You MUST DROP them.
-3. **Strict Data Leakage Prevention (The "Future Information" test):**
-   - Ask yourself: *Is this feature known at the exact moment the model makes its prediction in production?*
-   - If a feature is populated *after* the target event occurs (e.g. `recovery_rate` when predicting default, or `treatment_outcome` when predicting disease), it is target leakage. You MUST DROP it.
-4. **Noise & High-Cardinality Safeguards:**
-   - Drop IDs, UUIDs, row numbers, URL links, names, and noisy metadata.
+#### Self-Reflective Constraint Generation:
+You are an expert Data Scientist. Analyze the objective and the raw data, and derive the strict fairness, data leakage, and operational constraints organically based purely on the context. Do not apply arbitrary rules.
 
 Schema (column name → data type, number of unique values, sample values):
 {schema}
 
-Respond ONLY with a valid JSON object in EXACTLY this structure (no markdown wrappers):
+Raw Data (First 10 rows):
+{raw_data}
+
+Respond ONLY with a valid JSON object in EXACTLY this structure (no markdown wrappers). 
+By generating `step_0_domain_analysis` and `step_1_data_dictionary` first, you force yourself to deeply understand the dataset and legal constraints before making selection decisions in `step_2`.
+
 {{
-  "domain_analysis": {{
-    "key_predictive_drivers": "Causal factors and logical predictive relationships for '{target_column}'.",
-    "dangerous_features_to_watch_for": "Specific indicators of data leakage, proxy bias, or noise.",
-    "general_strategy": "Overall feature selection philosophy chosen for this specific scenario."
+  "step_0_domain_analysis": {{
+    "identified_domain": "Determine the exact industry/context based on the data.",
+    "ethical_and_bias_constraints": "Dynamically generate constraints organically based on the domain. Does this domain require banning geographic proxies, or is location a fundamental driver?",
+    "data_leakage_risks": "Identify what 'future information' looks like in this specific context.",
+    "key_predictive_drivers": "Causal factors for this domain."
   }},
-  "feature_reasoning": [
+  "step_1_data_dictionary": [
     {{
       "column_name": "string",
-      "column_description": "What this column represents.",
-      "chain_of_thought_reasoning": "Step-by-step thinking: 1. Is this known at prediction time? 2. Is it a causal driver or proxy? 3. Does including it make real-world sense?",
+      "inferred_description": "Extensive description of what this column actually represents in the real world based on the schema and samples."
+    }}
+  ],
+  "step_2_feature_selection": [
+    {{
+      "column_name": "string",
+      "chain_of_thought_reasoning": "Step 1: The user description explicitly states [QUOTE]. Step 2: The dataset schema shows this column is [TYPE/SAMPLES]. Step 3: Based strictly on the description and schema, does this violate any of the derived constraints?",
       "action": "keep" | "drop",
       "reason": "Final technical justification for keeping or dropping.",
       "imputation_strategy": "mean" | "median" | "mode" | "zero" | "unknown" (required if action is keep, otherwise null),
       "encoding_strategy": "one_hot" | "target_encoding" | "ordinal" | "none" (required if action is keep, otherwise null)
+    }}
+  ]
+}}
+
+CRITICAL REQUIREMENT: Both arrays MUST contain an entry for EVERY SINGLE COLUMN listed in the schema. Do not skip or omit any column. If a column is omitted, it will be considered useless and automatically dropped.
+"""
+
+_POST_CHECK_PROMPT = """
+You are an AI Failsafe mechanism in an automated machine learning pipeline.
+Objective: Predict '{target_column}' in a {task_type} task for the '{domain}' domain.
+User Description: "{objective_text}"
+
+Before taking action, actively reflect on the domain to determine the operational and legal constraints based purely on the data context.
+
+You have two strict duties to ensure Context-Aware Feature Engineering:
+1. RESCUE: Review the `pending_drops`. Rescue them if they are genuinely valid for this domain based on the raw data context.
+2. EVICT: Review the `pending_keeps`. If a column violates the domain's strict ethical constraints or is fundamentally irrelevant context/noise based on the raw data context, you MUST drop it.
+3. LOOPBACK RESOLUTION: If there are 'Previous Governance Failures' from a prior pipeline run, you MUST evict the specific features causing the failure (e.g., protected attributes or proxies) UNLESS dropping them would cause unacceptable model performance degradation for a fundamental causal driver. You must explicitly weigh the fairness vs performance tradeoff.
+
+Raw Data (First 10 rows):
+{raw_data}
+
+Previous Governance Failures (if any):
+{governance_failures}
+
+Pending Drops (Proposed for deletion):
+{pending_drops}
+
+Pending Keeps (Proposed for retention):
+{pending_keeps}
+
+Respond ONLY with a valid JSON object in EXACTLY this structure (if there are none to rescue or evict, use an empty list []):
+{{
+  "domain_analysis": {{
+    "ethical_and_bias_constraints": "Dynamically generate the strict legal, ethical, or fairness constraints for this specific domain.",
+    "data_leakage_risks": "Identify what 'future information' looks like in this specific context."
+  }},
+  "rescued_features": [
+    {{
+      "column_name": "string",
+      "chain_of_thought": "1. What does the user description state? 2. Is this actually predictive or a violation?",
+      "reason": "Why this must be rescued (causal driver)."
+    }}
+  ],
+  "evicted_features": [
+    {{
+      "column_name": "string",
+      "chain_of_thought": "1. What does the user description state? 2. Does this violate the ethical constraints, leakage risks, or is it irrelevant noise?",
+      "reason": "Why this is irrelevant to the scenario and must be evicted."
     }}
   ]
 }}
@@ -157,10 +208,17 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
 
     accepted: List[FeatureLogEntry] = []
     rejected: List[FeatureLogEntry] = []
+    pending_drops: Dict[str, str] = {}
 
     # ── Step 0: AI Semantic Feature Selection ─────────────────────────
     # Use LLM to conceptually drop IDs/names and provide reasoning for keeping others.
     try:
+        # Extract 10 rows of raw data for AI context
+        try:
+            raw_data_str = df.head(10).to_json(orient="records", indent=2)
+        except Exception:
+            raw_data_str = "Error extracting raw data."
+
         # Build rich schema info: dtype + nunique + sample values
         schema_info = {}
         for col, dtype in df.dtypes.items():
@@ -181,17 +239,29 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
             task_type=task_type.value if hasattr(task_type, 'value') else str(task_type),
             domain=state.objective.domain_tag,
             objective_text=state.objective.raw_text,
-            schema=json.dumps(schema_info, indent=2)
+            schema=json.dumps(schema_info, indent=2),
+            raw_data=raw_data_str
         )
         log_step_and_broadcast_sync(state, "feature_engineering", "AI Semantic Selection Started", f"Analyzing {len(schema_info)} features for semantic relevance to the objective.")
         semantic_result = get_llm_json(prompt)
-        feature_reasoning = semantic_result.get("feature_reasoning", [])
+        
+        # Extract data dictionary and feature reasoning
+        data_dict_array = semantic_result.get("step_1_data_dictionary", [])
+        data_dictionary = {
+            item.get("column_name"): item.get("inferred_description", "No description provided.") 
+            for item in data_dict_array if isinstance(item, dict)
+        }
+        
+        feature_reasoning = semantic_result.get("step_2_feature_selection", [])
+        
+        evaluated_cols = set()
         
         for item in feature_reasoning:
+            if not isinstance(item, dict): continue
             c = item.get("column_name")
             action = item.get("action")
             reason = item.get("reason", "").strip()
-            col_desc = item.get("column_description", "").strip()
+            col_desc = data_dictionary.get(c, "No description generated.")
             imputation = item.get("imputation_strategy")
             encoding = item.get("encoding_strategy")
             cot = item.get("chain_of_thought_reasoning", "").strip()
@@ -200,23 +270,15 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
                 reason = "Retained based on domain and objective relevance."
             
             if c and c in df.columns and c != target_col:
+                evaluated_cols.add(c)
                 if action == "drop":
-                    # Format the rejection reason with the column description for frontend
                     full_reason = f"AI Semantic Filter: {reason}"
                     if col_desc:
                         full_reason = f"{col_desc} — {reason}"
                     if cot:
                         full_reason = f"{full_reason} [CoT: {cot}]"
-                    rejected.append(FeatureLogEntry(
-                        feature=c,
-                        transformation="drop",
-                        status="rejected",
-                        reason=full_reason,
-                        imputation_strategy=None,
-                    ))
-                    df = df.drop(columns=[c], errors="ignore")
+                    pending_drops[c] = full_reason
                 elif action == "keep":
-                    # Store AI strategies plus description for later rendering
                     if "ai_strategies" not in state.data_schema:
                         state.data_schema["ai_strategies"] = {}
                     state.data_schema["ai_strategies"][c] = {
@@ -230,6 +292,11 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
                         state, "feature_engineering", f"AI retained '{c}'",
                         f"{col_desc} | CoT: {cot} | Imputation: {imputation} | Encoding: {encoding}"
                     )
+                    
+        # Drop any columns the LLM completely ignored!
+        for c in list(df.columns):
+            if c != target_col and c not in evaluated_cols and c not in protected_attrs:
+                pending_drops[c] = "AI Semantic Filter: Omitted by AI during feature selection."
 
     except Exception as e:
         # If LLM fails, just proceed to math-based checks
@@ -240,39 +307,21 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
         if col == target_col:
             continue
         if df[col].nunique(dropna=False) <= 1:
-            rejected.append(FeatureLogEntry(
-                feature=col,
-                transformation="drop",
-                status="rejected",
-                reason="Dropped: Zero variance (constant column).",
-            ))
-            df = df.drop(columns=[col], errors="ignore")
+            pending_drops[col] = "Math Check: Zero variance (constant column)."
 
     # ── Step 1: Drop high-missingness columns ─────────────────────────
     if state.data_health_report:
         for col, pct in state.data_health_report.missingness_flags.items():
-            if col == target_col:
+            if col == target_col or col not in df.columns:
                 continue
             if pct > HIGH_MISSINGNESS_DROP_THRESHOLD:
-                rejected.append(FeatureLogEntry(
-                    feature=col,
-                    transformation="drop",
-                    status="rejected",
-                    reason=f"Dropped: {pct:.1%} missing values (threshold: {HIGH_MISSINGNESS_DROP_THRESHOLD:.0%})",
-                ))
-                df = df.drop(columns=[col], errors="ignore")
+                pending_drops[col] = f"Math Check: {pct:.1%} missing values (threshold: {HIGH_MISSINGNESS_DROP_THRESHOLD:.0%})"
 
     # ── Step 2: Drop confirmed leakage columns ────────────────────────
     for col in leakage_cols:
         if col == target_col or col not in df.columns:
             continue
-        rejected.append(FeatureLogEntry(
-            feature=col,
-            transformation="drop",
-            status="rejected",
-            reason="Dropped: potential target leakage detected by Data Profiling Agent.",
-        ))
-        df = df.drop(columns=[col], errors="ignore")
+        pending_drops[col] = "Math Check: Flagged as potential target leakage by Data Profiling Agent."
 
     # ── Step 2.5: Drop multicollinear features ────────────────────────
     numeric_cols_for_corr = [c for c in df.columns if c != target_col and pd.api.types.is_numeric_dtype(df[c])]
@@ -284,13 +333,94 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
             # Find which column it's most correlated with
             max_corr_col = upper_tri[col].idxmax() if not upper_tri[col].isna().all() else "another feature"
             max_corr_val = upper_tri[col].max() if not upper_tri[col].isna().all() else 0.0
+            pending_drops[col] = f"Math Check: Multicollinearity: corr({col}, {max_corr_col}) = {max_corr_val:.2f} (> 0.85 threshold)."
+
+    # ── Step 2.8: AI Post-Check Failsafe ──────────────────────────────
+    rescued_cols = {}
+    evicted_cols = {}
+    
+    pending_keeps = [c for c in df.columns if c != target_col and c not in pending_drops and c not in protected_attrs]
+
+    if pending_drops or pending_keeps:
+        log_step_and_broadcast_sync(state, "feature_engineering", "AI Post-Check Failsafe", f"Reviewing {len(pending_drops)} proposed drops and {len(pending_keeps)} proposed keeps for context-awareness.")
+        
+        keeps_info = {}
+        for c in pending_keeps:
+            keeps_info[c] = state.data_schema.get("ai_strategies", {}).get(c, {}).get("column_description", "No description provided.")
+
+        post_prompt = _POST_CHECK_PROMPT.format(
+            target_column=target_col,
+            task_type=task_type.value if hasattr(task_type, 'value') else str(task_type),
+            domain=state.objective.domain_tag,
+            objective_text=state.objective.raw_text,
+            pending_drops=json.dumps(pending_drops, indent=2),
+            pending_keeps=json.dumps(keeps_info, indent=2),
+            raw_data=raw_data_str,
+            governance_failures=json.dumps(state.governance_audit.failure_reasons, indent=2) if state.governance_audit.failure_reasons else "None"
+        )
+        import time
+        time.sleep(2)  # Mitigate Gemini free-tier 15RPM rate limits for rapid consecutive calls
+        try:
+            post_result = get_llm_json(post_prompt)
+            rescues = post_result.get("rescued_features")
+            evicts = post_result.get("evicted_features")
+            domain_analysis = post_result.get("domain_analysis", {})
+            reasoning_str = domain_analysis.get("ethical_and_bias_constraints", "") + "\n" + domain_analysis.get("data_leakage_risks", "")
+            
+            if not isinstance(rescues, list): rescues = []
+            if not isinstance(evicts, list): evicts = []
+            
+            rescued_names = []
+            evicted_names = []
+            
+            for res in rescues:
+                if not isinstance(res, dict): continue
+                rc = res.get("column_name")
+                if rc in pending_drops:
+                    rescued_cols[rc] = res.get("reason", "Rescued by AI failsafe.")
+                    rescued_names.append(rc)
+            for ev in evicts:
+                if not isinstance(ev, dict): continue
+                ec = ev.get("column_name")
+                if ec in pending_keeps:
+                    evicted_cols[ec] = ev.get("reason", "Evicted by AI failsafe as irrelevant context.")
+                    evicted_names.append(ec)
+                    
+            conclusion_str = f"Rescued: {', '.join(rescued_names) if rescued_names else 'None'}. Evicted: {', '.join(evicted_names) if evicted_names else 'None'}."
+            
+            log_step_and_broadcast_sync(
+                state, "feature_engineering", "AI Post-Check Failsafe Executed", 
+                "The AI Failsafe has successfully evaluated pending drops and keeps.",
+                problem=f"Evaluate {len(pending_drops)} drops and {len(pending_keeps)} keeps against domain constraints, leakage, and fairness loopbacks.",
+                reasoning=reasoning_str,
+                conclusion=conclusion_str
+            )
+        except Exception as e:
+            log_step_and_broadcast_sync(state, "feature_engineering", "AI Post-Check Failed", f"LLM parsing error during failsafe: {str(e)}\nRaw Response keys: {list(post_result.keys()) if 'post_result' in locals() else 'None'}")
+
+    # Apply final drops and record to audit log
+    for col, pre_reason in pending_drops.items():
+        if col not in rescued_cols:
+            # Drop it
             rejected.append(FeatureLogEntry(
                 feature=col,
                 transformation="drop",
                 status="rejected",
-                reason=f"Dropped due to multicollinearity: corr({col}, {max_corr_col}) = {max_corr_val:.2f} (> 0.85 threshold). Keeping one redundant feature is sufficient.",
+                reason=f"[Pre-Decision: {pre_reason}] -> [Post-Decision AI Failsafe: CONFIRMED DROP]",
+                imputation_strategy=None,
             ))
             df = df.drop(columns=[col], errors="ignore")
+            
+    # Apply evictions
+    for col, evict_reason in evicted_cols.items():
+        rejected.append(FeatureLogEntry(
+            feature=col,
+            transformation="drop",
+            status="rejected",
+            reason=f"[Pre-Decision: Retained] -> [Post-Decision AI Failsafe: EVICTED - {evict_reason}]",
+            imputation_strategy=None,
+        ))
+        df = df.drop(columns=[col], errors="ignore")
 
     # ── Step 3: Prepare base dataset for metric evaluation ────────────
     df_work = df.copy()
@@ -307,39 +437,9 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
 
     base_score = _quick_score(X_base, y_base, task_type)
 
-    # ── Step 4: Governance mid-stage proxy check ───────────────────────
-    from backend.agents.governance import quick_fairness_proxy_check
-
+    # ── Step 4: Propose and evaluate transformations ──────────────────
     remaining_cols = [c for c in df.columns if c != target_col]
-    proxy_flags: Dict[str, str] = {}
-    
-    allow_sensitive_override = state.governance_audit.compliance_thresholds.get("allow_sensitive_features_override", False)
-    
-    if not allow_sensitive_override:
-        for col in remaining_cols:
-            if col in protected_attrs:
-                continue
-            flag_reason = quick_fairness_proxy_check(df, col, protected_attrs)
-            if flag_reason:
-                proxy_flags[col] = flag_reason
-
-    # ── Step 5: Propose and evaluate transformations ──────────────────
-    feature_set = [c for c in remaining_cols if c not in proxy_flags]
-
-    # If we failed governance previously (loopback), explicitly drop the protected attributes
-    # to fix the Fairness FAIL (Disparate Impact), UNLESS clinical override is active.
-    if state.governance_audit.iteration_count > 0 and not allow_sensitive_override:
-        for p_attr in protected_attrs:
-            if p_attr in feature_set:
-                feature_set.remove(p_attr)
-                rejected.append(FeatureLogEntry(
-                    feature=p_attr,
-                    transformation="drop",
-                    status="rejected",
-                    reason=f"Dropped protected attribute '{p_attr}' after Governance loopback to improve fairness.",
-                    governance_flagged=True,
-                ))
-
+    feature_set = list(remaining_cols)
     for col in list(feature_set):
         log_step_and_broadcast_sync(state, "feature_engineering", f"Evaluating {col}", f"Testing transformations for feature {col}...")
         series = df[col]
@@ -353,6 +453,8 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
         imputation_strategy = (ai_strat.get("imputation_strategy") or ("mean" if is_numeric else "mode")).lower() if has_nulls else "none"
 
         transform_applied, transform_label, new_col_name = None, None, col
+        
+        rescue_msg = f" [Post-Decision AI Failsafe: RESCUED - {rescued_cols[col]}]" if col in rescued_cols else ""
 
         if is_numeric:
             skew = float(series.skew()) if series.notna().sum() > 2 else 0.0
@@ -367,21 +469,21 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
                 if delta >= MIN_METRIC_DELTA:
                     accepted.append(FeatureLogEntry(
                         feature=col, transformation=transform_label, status="accepted",
-                        reason=f"Log transform improved metric by {delta:+.4f} (skewness was {skew:.2f})",
+                        reason=f"Log transform improved metric by {delta:+.4f} (skewness was {skew:.2f}).{rescue_msg}",
                         metric_delta=round(delta, 4),
                         imputation_strategy=imputation_strategy,
                     ))
                 else:
                     accepted.append(FeatureLogEntry(
                         feature=col, transformation="keep_as_is", status="accepted",
-                        reason=f"Kept as-is: log transform showed no improvement ({delta:+.4f})",
+                        reason=f"Kept as-is: log transform showed no improvement ({delta:+.4f}).{rescue_msg}",
                         metric_delta=round(delta, 4),
                         imputation_strategy=imputation_strategy,
                     ))
             else:
                 accepted.append(FeatureLogEntry(
                     feature=col, transformation="keep_as_is", status="accepted",
-                    reason="Numeric feature retained as-is (no significant skewness).",
+                    reason=f"Numeric feature retained as-is (no significant skewness).{rescue_msg}",
                     imputation_strategy=imputation_strategy,
                 ))
 
@@ -389,25 +491,15 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
             if unique_count <= LOW_CARDINALITY_THRESHOLD:
                 accepted.append(FeatureLogEntry(
                     feature=col, transformation="one_hot_encoding", status="accepted",
-                    reason=f"One-hot encoding applied ({unique_count} unique values ≤ {LOW_CARDINALITY_THRESHOLD} threshold).",
+                    reason=f"One-hot encoding applied ({unique_count} unique values ≤ {LOW_CARDINALITY_THRESHOLD} threshold).{rescue_msg}",
                     imputation_strategy=imputation_strategy,
                 ))
             else:
                 accepted.append(FeatureLogEntry(
                     feature=col, transformation="frequency_encoding", status="accepted",
-                    reason=f"Frequency encoding applied (high cardinality: {unique_count} unique values).",
+                    reason=f"Frequency encoding applied (high cardinality: {unique_count} unique values).{rescue_msg}",
                     imputation_strategy=imputation_strategy,
                 ))
-
-    # ── Step 6: Log governance-flagged proxies as rejected ─────────────
-    for col, reason in proxy_flags.items():
-        rejected.append(FeatureLogEntry(
-            feature=col,
-            transformation="drop",
-            status="rejected",
-            reason=reason,
-            governance_flagged=True,
-        ))
 
     # ── Step 7: Enforce top-K feature selection (if requested) ────────
     top_k = state.objective.feature_selection_top_k

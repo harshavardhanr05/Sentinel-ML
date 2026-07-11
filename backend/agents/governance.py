@@ -81,14 +81,19 @@ You are a Senior AI Safety and Compliance Officer. Given the user's objective, d
 Your job is to determine:
 1. Which of the identified protected attributes should actually be audited for bias/fairness (e.g. 'gender', 'race').
 2. Whether to completely skip fairness checks (e.g. if the task is clinical/medical and variables like 'age', 'sex' are crucial physiological predictors where parity checks are counterproductive or harmful).
-3. The exact thresholds for the checks (disparate_impact_min, equal_opportunity_diff_max, auc_degradation_max_pct, bootstrap_variance_max).
+3. The exact thresholds for the checks (disparate_impact_min, equal_opportunity_diff_max, auc_degradation_max_pct, bootstrap_variance_max, proxy_correlation_threshold).
+4. IMPORTANT: Actively balance Fairness vs Model Performance Degradation. If a feature is a strong causal driver, dropping it might hurt the model more than it helps fairness. Set the thresholds accordingly based purely on the raw data context.
 
 User Objective: {objective}
 Task Type: {task_type}
 Target Column: {target_column}
 Candidate Protected Attributes: {candidate_protected_attributes}
+
 Dataset Columns and Types:
 {column_info}
+
+Raw Data (First 10 rows): 
+{raw_data}
 
 Return ONLY a JSON object conforming exactly to this schema:
 {{
@@ -98,7 +103,8 @@ Return ONLY a JSON object conforming exactly to this schema:
   "equal_opportunity_diff_max": 0.10,
   "auc_degradation_max_pct": 10.0,
   "bootstrap_variance_max": 0.03,
-  "reasoning": "A detailed, professional explanation of why this audit plan was chosen for this specific scenario (e.g., explaining why medical variables are physiological predictors and bypass audits, or why loan models require strict ECOA checks)."
+  "proxy_correlation_threshold": 0.40,
+  "reasoning": "A detailed explanation of why this audit plan was chosen for this specific scenario, explicitly addressing the tradeoff between fairness and model performance degradation for this context."
 }}
 Only return JSON. Do not include markdown blocks.
 """
@@ -248,6 +254,12 @@ def run_governance(state: PipelineState) -> PipelineState:
     from backend.llm.client import get_llm_json
     import json
     
+    # Extract 10 rows of raw data for AI context
+    try:
+        raw_data_str = df.head(10).to_json(orient="records", indent=2)
+    except Exception:
+        raw_data_str = "Error extracting raw data."
+
     col_info = {}
     for col in df.columns:
         is_cat = str(df[col].dtype) in ["object", "category"] or df[col].nunique() < 15
@@ -261,7 +273,8 @@ def run_governance(state: PipelineState) -> PipelineState:
         task_type=task_type.value if hasattr(task_type, "value") else str(task_type),
         target_column=target_col,
         candidate_protected_attributes=json.dumps(protected_attrs),
-        column_info=json.dumps(col_info, indent=2)
+        column_info=json.dumps(col_info, indent=2),
+        raw_data=raw_data_str
     )
 
     # Fallbacks in case AI call fails
@@ -281,6 +294,7 @@ def run_governance(state: PipelineState) -> PipelineState:
             eod_max = plan.get("equal_opportunity_diff_max", eod_max)
             auc_deg_max = plan.get("auc_degradation_max_pct", auc_deg_max)
             bootstrap_var_max = plan.get("bootstrap_variance_max", bootstrap_var_max)
+            proxy_corr = plan.get("proxy_correlation_threshold", PROXY_CORRELATION_THRESHOLD)
             reasoning = plan.get("reasoning", reasoning)
             
             # Override compliance details in state
@@ -288,10 +302,17 @@ def run_governance(state: PipelineState) -> PipelineState:
                 "disparate_impact_min": di_min,
                 "equal_opportunity_diff_max": eod_max,
                 "auc_degradation_max_pct": auc_deg_max,
-                "bootstrap_variance_max": bootstrap_var_max
+                "bootstrap_variance_max": bootstrap_var_max,
+                "proxy_correlation_threshold": proxy_corr
             }
             state.governance_audit.compliance_reasoning = reasoning
-            log_step_and_broadcast_sync(state, "governance", "Compliance Plan Determined", f"AI compliance officer determined audit thresholds: DI>={di_min}, EOD<={eod_max}. Justification: {reasoning}")
+            log_step_and_broadcast_sync(
+                state, "governance", "Compliance Plan Determined", 
+                f"AI compliance officer determined audit thresholds: DI>={di_min}, EOD<={eod_max}, Proxy Corr>={proxy_corr}.",
+                problem=f"Establish strict threshold targets for '{target_col}' in '{task_type}' considering '{protected_attrs}' context.",
+                reasoning=reasoning,
+                conclusion=f"Set Disparate Impact Min: {di_min}, EOD Max: {eod_max}, Proxy Corr: {proxy_corr}. Skipping Fairness: {skip_fairness}."
+            )
     except Exception as e:
         log_step_and_broadcast_sync(state, "governance", "Compliance Plan Determination Failed", f"Could not determine plan via AI: {e}. Falling back to defaults.")
 

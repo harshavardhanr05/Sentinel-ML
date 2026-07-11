@@ -10,7 +10,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, ScatterChart, Scatter, ZAxis,
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
-  AreaChart, Area
+  AreaChart, Area, Legend
 } from 'recharts'
 import {
   Activity, BarChart2, PieChart as PieIcon, TrendingUp,
@@ -254,17 +254,51 @@ export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) 
           <ResponsiveContainer width="100%" height="100%">
             {chart.type === 'pie' ? (
               <PieChart>
-                <Pie data={data} cx="50%" cy="50%" innerRadius={55} outerRadius={100} paddingAngle={4} dataKey="count" stroke="none">
-                  {data.map((_: any, i: number) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+                <defs>
+                  {COLORS.map((color, i) => (
+                    <linearGradient id={`pie-grad-${safeId}-${i}`} x1="0" y1="0" x2="0.8" y2="1" key={i}>
+                      <stop offset="0%" stopColor={color} stopOpacity={1} />
+                      <stop offset="100%" stopColor={color} stopOpacity={0.6} />
+                    </linearGradient>
+                  ))}
+                  <filter id={`pie-shadow-${safeId}`} x="-20%" y="-20%" width="140%" height="140%">
+                    <feDropShadow dx="2" dy="5" stdDeviation="5" floodOpacity="0.4" floodColor="#000000" />
+                  </filter>
+                </defs>
+                <Pie 
+                  data={data} cx="50%" cy="50%" innerRadius={55} outerRadius={95} 
+                  paddingAngle={5} dataKey="count" 
+                  stroke="rgba(255,255,255,0.08)" strokeWidth={1.5}
+                  filter={`url(#pie-shadow-${safeId})`}
+                >
+                  {data.map((_: any, i: number) => <Cell key={i} fill={`url(#pie-grad-${safeId}-${i % COLORS.length})`} />)}
                 </Pie>
                 <Tooltip content={<CustomTooltip />} />
+                <Legend layout="horizontal" verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: '11px', paddingTop: '15px' }} />
               </PieChart>
             ) : chart.type === 'doughnut' ? (
               <PieChart>
-                <Pie data={data} cx="50%" cy="50%" innerRadius={45} outerRadius={95} paddingAngle={4} dataKey="count" stroke="none">
-                  {data.map((_: any, i: number) => <Cell key={i} fill={COLORS[(i + 2) % COLORS.length]} />)}
+                <defs>
+                  {COLORS.map((color, i) => (
+                    <linearGradient id={`doughnut-grad-${safeId}-${i}`} x1="0" y1="0" x2="1" y2="1" key={i}>
+                      <stop offset="0%" stopColor={color} stopOpacity={1} />
+                      <stop offset="100%" stopColor={color} stopOpacity={0.5} />
+                    </linearGradient>
+                  ))}
+                  <filter id={`doughnut-shadow-${safeId}`} x="-20%" y="-20%" width="140%" height="140%">
+                    <feDropShadow dx="0" dy="8" stdDeviation="6" floodOpacity="0.4" floodColor="#000000" />
+                  </filter>
+                </defs>
+                <Pie 
+                  data={data} cx="50%" cy="50%" innerRadius={55} outerRadius={90} 
+                  paddingAngle={5} dataKey="count" 
+                  stroke="rgba(255,255,255,0.1)" strokeWidth={1}
+                  filter={`url(#doughnut-shadow-${safeId})`}
+                >
+                  {data.map((_: any, i: number) => <Cell key={i} fill={`url(#doughnut-grad-${safeId}-${(i + 2) % COLORS.length})`} />)}
                 </Pie>
                 <Tooltip content={<CustomTooltip />} />
+                <Legend layout="horizontal" verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: '11px', paddingTop: '15px' }} />
               </PieChart>
             ) : chart.type === 'radar' ? (
               <RadarChart cx="50%" cy="50%" outerRadius="75%" data={data.slice(0, 8)}>

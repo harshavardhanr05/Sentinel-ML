@@ -279,6 +279,9 @@ class AgentStepEntry(BaseModel):
     is_ai_code_request: bool = False
     ai_summary: Optional[str] = None
     ai_technique: Optional[str] = None
+    problem: Optional[str] = None
+    reasoning: Optional[str] = None
+    conclusion: Optional[str] = None
     generated_code: Optional[str] = None
     code_error: Optional[str] = None
     fixed_code: Optional[str] = None
@@ -479,6 +482,9 @@ class PipelineState(BaseModel):
                  is_ai_code_request: bool = False, 
                  ai_summary: Optional[str] = None,
                  ai_technique: Optional[str] = None,
+                 problem: Optional[str] = None,
+                 reasoning: Optional[str] = None,
+                 conclusion: Optional[str] = None,
                  generated_code: Optional[str] = None, 
                  code_error: Optional[str] = None, 
                  fixed_code: Optional[str] = None,
@@ -491,10 +497,13 @@ class PipelineState(BaseModel):
             is_ai_code_request=is_ai_code_request,
             ai_summary=ai_summary,
             ai_technique=ai_technique,
+            problem=problem,
+            reasoning=reasoning,
+            conclusion=conclusion,
             generated_code=generated_code,
             code_error=code_error,
             fixed_code=fixed_code,
-            fix_method=fix_method,
+            fix_method=fix_method
         ))
         self.updated_at = datetime.utcnow()
 

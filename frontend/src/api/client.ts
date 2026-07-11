@@ -139,6 +139,7 @@ export interface PipelineState {
     severity_summary: Record<string, string>
     profiling_notes: string[]
   }
+  agent_step_log?: any[]
   feature_log: {
     accepted: Array<{ feature: string; transformation?: string | null; status: string; reason: string; metric_delta?: number | null; governance_flagged?: boolean; imputation_strategy?: string | null }>
     rejected: Array<{ feature: string; transformation?: string | null; status: string; reason: string; governance_flagged?: boolean }>
