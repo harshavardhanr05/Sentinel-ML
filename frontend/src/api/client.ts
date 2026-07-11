@@ -27,6 +27,7 @@ export interface DecisionCard {
   cost_estimate?: string
   metrics_summary: Record<string, unknown>
   requires_response: boolean
+  ai_execution_logs?: any[]
 }
 
 export interface DecisionLogEntry {
@@ -42,6 +43,13 @@ export interface DecisionLogEntry {
   agent_justification?: string
   timestamp: string
   decided_at?: string
+  ai_execution_logs?: Array<{
+    attempt: number
+    code: string
+    error?: string
+    fixed_code?: string
+    status?: string
+  }>
 }
 
 export interface FairnessMetrics {
@@ -179,7 +187,7 @@ export async function submitDecision(
   runId: string,
   action: 'approve' | 'reject' | 'counter_propose',
   note?: string
-): Promise<{ agent_justification?: string }> {
+): Promise<{ agent_justification?: string; ai_execution_logs?: any[] }> {
   const res = await api.post(`/runs/${runId}/decision`, { action, note })
   return res.data
 }
@@ -205,29 +213,38 @@ export function useRunWebSocket(
 ) {
   const wsRef = useRef<WebSocket | null>(null)
 
-  const connect = useCallback(() => {
-    if (!runId) return
-    const ws = new WebSocket(`${WS_BASE}/ws/${runId}`)
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as PipelineState
-        onMessage(data)
-      } catch {}
-    }
-
-    ws.onclose = () => {
-      // Reconnect after 2s if unexpectedly closed
-      setTimeout(connect, 2000)
-    }
-
-    wsRef.current = ws
-  }, [runId, onMessage])
-
   useEffect(() => {
-    connect()
-    return () => {
-      wsRef.current?.close()
+    let isActive = true
+
+    const connect = () => {
+      if (!runId || !isActive) return
+      const ws = new WebSocket(`${WS_BASE}/ws/${runId}`)
+
+      ws.onmessage = (event) => {
+        if (!isActive) return
+        try {
+          const data = JSON.parse(event.data) as PipelineState
+          onMessage(data)
+        } catch {}
+      }
+
+      ws.onclose = () => {
+        if (isActive) {
+          setTimeout(connect, 2000)
+        }
+      }
+
+      wsRef.current = ws
     }
-  }, [connect])
+
+    connect()
+
+    return () => {
+      isActive = false
+      if (wsRef.current) {
+        wsRef.current.onclose = null // prevent reconnect loop
+        wsRef.current.close()
+      }
+    }
+  }, [runId, onMessage])
 }

@@ -239,9 +239,9 @@ def load_state_sync(run_id: str) -> Optional[PipelineState]:
         return PipelineState.model_validate(state_dict)
 
 
-def log_step_and_broadcast_sync(state: PipelineState, stage: str, step_name: str, details: str) -> None:
+def log_step_and_broadcast_sync(state: PipelineState, stage: str, step_name: str, details: str, **kwargs) -> None:
     """Helper to log a step, save state to DB, and trigger immediate WS broadcast."""
-    state.log_step(stage, step_name, details)
+    state.log_step(stage, step_name, details, **kwargs)
     save_state_sync(state)
     import requests
     try:

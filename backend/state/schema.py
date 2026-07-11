@@ -276,6 +276,13 @@ class AgentStepEntry(BaseModel):
     step_name: str
     details: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+    is_ai_code_request: bool = False
+    ai_summary: Optional[str] = None
+    ai_technique: Optional[str] = None
+    generated_code: Optional[str] = None
+    code_error: Optional[str] = None
+    fixed_code: Optional[str] = None
+    fix_method: Optional[str] = None
 
 
 class GovernanceAudit(BaseModel):
@@ -354,6 +361,7 @@ class DecisionLogEntry(BaseModel):
     )
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     decided_at: Optional[datetime] = None
+    ai_execution_logs: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class DecisionCard(BaseModel):
@@ -368,6 +376,7 @@ class DecisionCard(BaseModel):
     cost_estimate: Optional[str] = None
     metrics_summary: Dict[str, Any] = Field(default_factory=dict)
     requires_response: bool = True
+    ai_execution_logs: Optional[List[Dict[str, Any]]] = None
 
 
 class StageStatusMap(BaseModel):
@@ -466,12 +475,26 @@ class PipelineState(BaseModel):
         self.decisions_log.append(entry)
         self.updated_at = datetime.utcnow()
 
-    def log_step(self, stage: str, step_name: str, details: str) -> None:
+    def log_step(self, stage: str, step_name: str, details: str, 
+                 is_ai_code_request: bool = False, 
+                 ai_summary: Optional[str] = None,
+                 ai_technique: Optional[str] = None,
+                 generated_code: Optional[str] = None, 
+                 code_error: Optional[str] = None, 
+                 fixed_code: Optional[str] = None,
+                 fix_method: Optional[str] = None) -> None:
         """Append a lightweight agent step to agent_step_log."""
         self.agent_step_log.append(AgentStepEntry(
             stage=stage,
             step_name=step_name,
             details=details,
+            is_ai_code_request=is_ai_code_request,
+            ai_summary=ai_summary,
+            ai_technique=ai_technique,
+            generated_code=generated_code,
+            code_error=code_error,
+            fixed_code=fixed_code,
+            fix_method=fix_method,
         ))
         self.updated_at = datetime.utcnow()
 

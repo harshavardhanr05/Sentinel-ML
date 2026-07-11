@@ -40,19 +40,16 @@ from backend.state.store import log_step_and_broadcast_sync
 _DASHBOARD_CHART_PROMPT = """
 You are an expert Data Scientist and BI Analyst. Given the dataset schema, user's objective, and correlation metrics, your task is to generate as many highly-diverse, insightful visualizations as possible (minimum 6, up to 10 charts) that a human analyst would find extremely valuable for Exploratory Data Analysis.
 
-For each visualization, you can choose to output EITHER:
-- **Option A (Interactive React UI Chart)**: For simple categorical counts, value scales, and distributions. These are fully interactive and hoverable.
-- **Option B (Static Seaborn/Matplotlib Plot)**: For complex multivariate plots, violin plots, and correlation heatmaps.
+You MUST output **ONLY Interactive React UI Charts**. No static Seaborn/Matplotlib images are allowed. You must return structured JSON data that will be rendered natively in the UI.
 
 Write a complete, standalone Python script that:
 1. Loads the dataset from `"{dataset_path}"`.
-2. Computes the summary statistics or processes data for Option A React charts, OR creates a Matplotlib figure and encodes it to base64 for Option B static charts.
+2. Computes the summary statistics or processes data for the React charts.
 3. Prints a single valid JSON array to `sys.stdout` containing all the charts.
 
 The JSON array must look like this:
 [
   {{
-    // Option A: Interactive React UI chart
     "id": "ai-chart-1",
     "title": "Interactive Age Group Breakdown",
     "insight": "Doughnut chart showing majority demographic.",
@@ -66,25 +63,19 @@ The JSON array must look like this:
       // {{ "binStart": 10.0, "count": 45 }}
     ]
   }},
-  {{
-    // Option B: Static Seaborn/Matplotlib plot
-    "id": "ai-chart-2",
-    "title": "Multivariate Correlation Heatmap",
-    "insight": "Complex correlation heatmap across all features.",
-    "imageBase64": "iVBORw0KGgoAAAANSUhEUgAA..." // Base64 encoded PNG
-  }},
   ...
 ]
 
 CRITICAL RULES:
-- **PREREQUISITE (PREFER INTERACTIVE REACT CHARTS)**: You MUST default to **Option A (Interactive React UI Chart)** for any standard plots (such as single-variable counts, correlations, line trends, or basic comparison bar/pie/radar/area/histogram plots). Calculating statistical aggregates using pandas and outputting data arrays is highly preferred.
-- **Option B (Static Seaborn Image)** should ONLY be used when the visualization is physically impossible to construct in Recharts (e.g., a correlation matrix heatmap, a violin plot, or a joint KDE density plot). If a chart can be represented as an Option A chart, you MUST output it as Option A.
+- **PREREQUISITE (ONLY INTERACTIVE REACT CHARTS)**: You MUST calculate statistical aggregates using pandas and output data arrays. Do NOT generate matplotlib or seaborn plots. Do NOT output base64 strings.
 - Do NOT output any markdown blocks like ```python. ONLY output the raw Python code.
-- Ensure the code handles potential missing values or infinite values gracefully.
+- Ensure the code handles potential missing values or infinite values gracefully. DO NOT use `sys.exit()` or exit early under any circumstances.
+- Do NOT encode categorical variables into numbers (like LabelEncoder) before aggregating for charts. Keep original string labels (e.g., 'Male', 'Female', 'Yes') so they remain informative in the UI.
+- You MUST explicitly call `print(json.dumps(charts))` at the end of the script to output the data. Do NOT use `json.dump` directly on `sys.stdout`.
 - Only print the JSON to stdout. Do not print anything else (no intermediate prints).
-- Make sure to `import sys`, `import json`, `import base64`, `import io`, `import pandas as pd`, `import seaborn as sns`, `import matplotlib.pyplot as plt`, `import numpy as np`.
+- Make sure to `import sys`, `import json`, `import pandas as pd`, `import numpy as np`.
 - Do NOT use `pd.np` (pandas has no attribute `np`). Use `numpy` directly (e.g. `np.random`).
-- You MUST run `sys.stdout.reconfigure(encoding='utf-8')` right after imports to prevent Windows console encoding errors. Do NOT use `ensure_ascii=False` when calling `json.dump` or `json.dumps`.
+- You MUST run `sys.stdout.reconfigure(encoding='utf-8')` right after imports to prevent Windows console encoding errors.
 
 User Objective: {user_objective}
 Objective Task: {task_type}
@@ -145,6 +136,11 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
         return state
 
     target_col = state.objective.target_column
+    if target_col and target_col not in df.columns:
+        err_msg = f"Target column '{target_col}' not found in the dataset. Please provide a valid target column."
+        log_step_and_broadcast_sync(state, "data_profiling", "Data Profiling Aborted", err_msg)
+        state.data_health_report = DataHealthReport(profiling_notes=[f"ERROR: {err_msg}"])
+        return state
 
     log_step_and_broadcast_sync(state, "data_profiling", "Data Profiling Started", "Commencing deep data health scans: missingness, leakage, PII, and imbalance checks.")
 
@@ -284,25 +280,65 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
                 raw_code = raw_code.split("```")[1].split("```")[0]
             raw_code = raw_code.strip()
             
-            # Execute Python code in a safe subprocess
+            # Execute Python code in a safe subprocess with self-correction
             import tempfile, subprocess, sys
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', encoding='utf-8', delete=False) as f:
-                f.write(raw_code)
-                temp_path = f.name
-                
-            try:
-                result = subprocess.run([sys.executable, temp_path], capture_output=True, text=True, encoding='utf-8', timeout=120)
-                if result.returncode == 0:
-                    try:
-                        ai_charts = json.loads(result.stdout)
-                        log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation", f"Successfully generated {len(ai_charts)} AI-driven visual EDA charts via Python script.")
-                    except json.JSONDecodeError as je:
-                        log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation Failed", f"Failed to parse JSON output: {je}")
-                else:
-                    log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation Failed", f"Script failed: {result.stderr}")
-            finally:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
+            from backend.agents.orchestrator import fix_generated_code
+            
+            current_code = raw_code
+            max_retries = 3
+            for attempt in range(max_retries):
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', encoding='utf-8', delete=False) as f:
+                    f.write(current_code)
+                    temp_path = f.name
+                    
+                try:
+                    result = subprocess.run([sys.executable, temp_path], capture_output=True, text=True, encoding='utf-8', timeout=120)
+                    if result.returncode == 0:
+                        try:
+                            import re
+                            out_str = result.stdout.strip()
+                            if not out_str:
+                                raise ValueError("Script executed successfully but produced no output. You MUST explicitly call print(json.dumps(charts)) at the end of your script.")
+                                
+                            # Robust JSON extraction
+                            match = re.search(r'\[\s*\{.*\}\s*\]', out_str, re.DOTALL)
+                            if match:
+                                out_str = match.group(0)
+                                
+                            ai_charts = json.loads(out_str)
+                            log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation", f"Successfully generated {len(ai_charts)} AI-driven visual EDA charts via Python script (Attempt {attempt+1}).")
+                            break
+                        except Exception as je:
+                            if attempt < max_retries - 1:
+                                fixed_code, _ = fix_generated_code(current_code, f"Failed to parse JSON output: {je}. You MUST print a valid JSON array to stdout using print(json.dumps(charts)). Do not print anything else.")
+                                if not fixed_code: break
+                                current_code = fixed_code
+                            else:
+                                log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation Failed", f"Failed to parse JSON output: {je}")
+                    else:
+                        if attempt < max_retries - 1:
+                            err_msg = result.stderr.strip()
+                            fixed_code, _ = fix_generated_code(current_code, f"Script failed with error:\n{err_msg}")
+                            if not fixed_code: break
+                            current_code = fixed_code
+                        else:
+                            log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation Failed", f"Script failed: {result.stderr}")
+                except subprocess.TimeoutExpired:
+                    if attempt < max_retries - 1:
+                        fixed_code, _ = fix_generated_code(current_code, "Script execution timed out after 120s. Try simplifying the pandas logic.")
+                        if not fixed_code: break
+                        current_code = fixed_code
+                    else:
+                        log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation Failed", "Script execution timed out.")
+                except Exception as e:
+                    log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation Failed", f"System error: {e}")
+                    break
+                finally:
+                    if os.path.exists(temp_path):
+                        try:
+                            os.unlink(temp_path)
+                        except:
+                            pass
     except Exception:
         pass
 
@@ -353,21 +389,7 @@ def _clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
             if converted_ratio > 0.90:
                 df[col] = numeric_series
 
-    # 5. Boolean/Binary Standardization
-    # If all non-null values map to a standard boolean set, convert them to 1/0
-    valid_pos = {"yes", "y", "true", "t", "1", "1.0"}
-    valid_neg = {"no", "n", "false", "f", "0", "0.0"}
-    
-    for col in df.select_dtypes(include=["object"]):
-        non_nulls = df[col].dropna()
-        if len(non_nulls) == 0:
-            continue
-            
-        lower_vals = {str(v).lower().strip() for v in non_nulls.unique()}
-        # If the set of unique lowercased values is a subset of valid pos+neg
-        # AND it actually contains at least one positive and one negative (to not binarize constant columns)
-        if lower_vals.issubset(valid_pos.union(valid_neg)) and len(lower_vals) > 1:
-            df[col] = df[col].apply(lambda x: 1 if pd.notna(x) and str(x).lower().strip() in valid_pos else 0 if pd.notna(x) else np.nan)
+    # (Boolean standardization removed: Let feature engineering handle this so Data Analysis shows descriptive strings instead of 1/0)
 
     # 6. Zero-Variance / Empty Column Pruning
     cols_to_drop = []

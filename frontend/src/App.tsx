@@ -116,7 +116,7 @@ export default function App() {
               <Shield size={16} className="text-white" />
             </div>
             <span className="text-lg font-bold text-slate-100">Sentinel-ML</span>
-            <span className="text-xs text-slate-500 mt-0.5">ML Governance Platform</span>
+            <span className="text-xs text-slate-500 mt-0.5">ML Automation Platform</span>
           </div>
 
           <div className="flex-1" />
@@ -141,7 +141,10 @@ export default function App() {
               setObjective('')
               setFile(null)
               setStartError(null)
-              setShowNewRun(!showNewRun)
+              setActiveRunId(null)
+              setPipelineState(null)
+              setActiveTab('dag')
+              setShowNewRun(true)
             }}
             className="btn-primary text-sm"
             id="new-run-btn"
@@ -374,6 +377,7 @@ export default function App() {
                   <DecisionCard
                     runId={activeRunId}
                     card={state.pending_approval!}
+                    realtimeLogs={state.agent_step_log}
                     onDecisionMade={() => {
                       // State will update via WebSocket
                     }}

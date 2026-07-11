@@ -104,12 +104,9 @@ def run_model_selection(state: PipelineState) -> PipelineState:
         return state
 
     # ── Handle Class Imbalance with SMOTE ────────────────────────────
-    # Automatically apply if severity was flagged by profiling, or if user requested it
-    is_imbalanced = False
-    if state.data_health_report and state.data_health_report.imbalance_flag:
-        is_imbalanced = True
-        
-    if task_type == TaskType.CLASSIFICATION and (state.smote_applied or is_imbalanced):
+    # Only applied when explicitly requested by the user (via chat or decision card).
+    # SMOTE is NOT triggered automatically, even if class imbalance is detected.
+    if task_type == TaskType.CLASSIFICATION and state.smote_applied:
         try:
             from imblearn.over_sampling import SMOTE
             state.smote_applied = True
@@ -705,13 +702,26 @@ def _prepare_data(
         # Optional Polynomial Features
         if state.objective.feature_optimization == "polynomial":
             from sklearn.preprocessing import PolynomialFeatures
+            from sklearn.feature_selection import SelectKBest, f_classif, f_regression
+            
+            # Avoid combinatorial explosion by limiting interactions to top 20 features
+            k_features = min(20, X_processed.shape[1])
+            selector = SelectKBest(score_func=f_classif if task_type == TaskType.CLASSIFICATION else f_regression, k=k_features)
+            X_poly_input = selector.fit_transform(X_processed, y)
+            poly_feature_names = [feature_names[i] for i in selector.get_support(indices=True)]
+            
             poly = PolynomialFeatures(degree=2, interaction_only=True, include_bias=False)
-            X_processed = poly.fit_transform(X_processed)
+            X_poly = poly.fit_transform(X_poly_input)
+            
             if hasattr(poly, "get_feature_names_out"):
-                feature_names = poly.get_feature_names_out(feature_names)
+                new_poly_names = poly.get_feature_names_out(poly_feature_names)
             else:
-                feature_names = [f"poly_{i}" for i in range(X_processed.shape[1])]
-            state.log_step("model_selection", "Polynomial Features", f"Generated {X_processed.shape[1]} interaction features.")
+                new_poly_names = [f"poly_{i}" for i in range(X_poly.shape[1])]
+                
+            # Replace the processed matrix with the polynomial subset to keep it bounded
+            X_processed = X_poly
+            feature_names = new_poly_names
+            state.log_step("model_selection", "Polynomial Features", f"Generated {X_processed.shape[1]} interaction features from top {k_features} original features.")
 
         # Optional PCA Optimization
         if state.objective.feature_optimization == "pca":

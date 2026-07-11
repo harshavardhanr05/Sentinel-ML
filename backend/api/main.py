@@ -143,10 +143,26 @@ async def create_run(
     # Quick schema extraction before pipeline starts
     try:
         import pandas as pd
+        import re
         if ext in (".parquet", ".pq"):
             df = pd.read_parquet(upload_path)
         else:
-            df = pd.read_csv(upload_path, nrows=5)
+            df = pd.read_csv(upload_path, low_memory=False)
+            
+        new_cols = []
+        for c in df.columns:
+            c_clean = str(c).strip()
+            c_clean = re.sub(r'\s+', '_', c_clean)
+            c_clean = re.sub(r'[\[\]<>]', '', c_clean)
+            new_cols.append(c_clean)
+        df.columns = new_cols
+        
+        # Save the cleaned dataset back to the upload path so LLM scripts load the clean version
+        if ext in (".parquet", ".pq"):
+            df.to_parquet(upload_path, index=False)
+        else:
+            df.to_csv(upload_path, index=False)
+        
         state.data_schema = {
             "columns": list(df.columns),
             "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
@@ -250,6 +266,8 @@ async def submit_decision(run_id: str, request: DecisionRequest, background_task
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid action: {action_str}")
 
+    original_step_count = len(state.agent_step_log)
+
     # Update the last pending decision log entry
     pending_card = state.pending_approval
     agent_justification = None
@@ -297,7 +315,7 @@ async def submit_decision(run_id: str, request: DecisionRequest, background_task
                 agent_justification = "Objective updated successfully based on your clarification."
         else:
             # Get agent's pros/cons justification and potential generated code
-            agent_justification, generated_code = _get_agent_justification(state, request.note)
+            agent_justification, generated_code, ai_summary, ai_technique = _get_agent_justification(state, request.note)
             
             note_lower = request.note.lower() if request.note else ""
             system_notes = []
@@ -362,7 +380,7 @@ async def submit_decision(run_id: str, request: DecisionRequest, background_task
                 if "select " in note_lower and " instead" in note_lower:
                     start_idx = note_lower.find("select ") + 7
                     end_idx = note_lower.find(" instead")
-                    model_target = note_lower[start_idx:end_idx].strip()
+                    model_target = note_lower[start_idx:end_idx].strip().replace("'", "").replace('"', "")
                     
                     found = False
                     for model_entry in state.model_leaderboard:
@@ -375,10 +393,11 @@ async def submit_decision(run_id: str, request: DecisionRequest, background_task
                             
                     if found:
                         system_notes.append(f"Model selection explicitly overridden to: {state.selected_model_name}.")
+                        generated_code = None
             log_stage = pending_card.stage if pending_card else state.current_stage
             
-            async def _instant_log(step_name: str, details: str):
-                state.log_step(log_stage, step_name, details)
+            async def _instant_log(step_name: str, details: str, **kwargs):
+                state.log_step(log_stage, step_name, details, **kwargs)
                 await save_state(state)
                 await ws_manager.broadcast(run_id, state.model_dump(mode="json"))
 
@@ -386,14 +405,13 @@ async def submit_decision(run_id: str, request: DecisionRequest, background_task
                 await _instant_log("Native Feature Queued", note)
                 
             # Execute generated code if present
-
             if generated_code and generated_code.strip() != "null":
                 import sys
                 import subprocess
                 import os
                 import tempfile
                 from backend.agents.orchestrator import fix_generated_code
-                await _instant_log("AI Code Execution Initiated", "Attempting to run dynamically generated Python script for alternative suggestion.")
+                await _instant_log("AI Code Execution Initiated", "Attempting to run dynamically generated Python script for alternative suggestion.", is_ai_code_request=True, generated_code=generated_code, ai_summary=ai_summary, ai_technique=ai_technique)
                 
                 max_retries = 5
                 current_code = generated_code
@@ -458,7 +476,7 @@ if __name__ == "__main__":
                                 
                             msg = f"Successfully generated and executed custom Python code to apply the requested transformation (Attempt {attempt + 1})."
                             system_notes.append(msg)
-                            await _instant_log("Custom Transformation Succeeded", msg)
+                            await _instant_log("Custom Transformation Succeeded", msg, is_ai_code_request=True, ai_summary=ai_summary, ai_technique=ai_technique)
                             break  # Success, exit the retry loop
                         else:
                             # Subprocess failed
@@ -486,13 +504,14 @@ if __name__ == "__main__":
                             
                             err_msg = f"Attempted to execute custom data transformation, but encountered an error:\n{err_msg}"
                             system_notes.append(f"Attempt {attempt + 1} failed.")
-                            await _instant_log(f"Execution Failed (Attempt {attempt + 1})", err_msg)
+                            await _instant_log(f"Execution Failed (Attempt {attempt + 1})", err_msg, is_ai_code_request=True, code_error=err_msg)
                             timeout_count = 0  # reset consecutive timeouts
                             
                             if attempt < max_retries - 1:
                                 await _instant_log("AI Self-Correction", "Requesting AI to fix the code based on the error.")
-                                fixed_code = fix_generated_code(current_code, err_msg, context_msg=request.note or "")
+                                fixed_code, fix_method = fix_generated_code(current_code, err_msg, context_msg=request.note or "")
                                 if fixed_code:
+                                    await _instant_log("AI Self-Correction Applied", "Generated fix for the error.", is_ai_code_request=True, fixed_code=fixed_code, fix_method=fix_method)
                                     current_code = fixed_code
                                 else:
                                     execution_failed_fatally = True
@@ -503,7 +522,7 @@ if __name__ == "__main__":
                     except subprocess.TimeoutExpired:
                         err_msg = "Code execution timed out after 150 seconds (possible endless loop)."
                         system_notes.append(f"Attempt {attempt + 1} failed: {err_msg}")
-                        await _instant_log(f"Execution Timeout (Attempt {attempt + 1})", err_msg)
+                        await _instant_log(f"Execution Timeout (Attempt {attempt + 1})", err_msg, is_ai_code_request=True, code_error=err_msg)
                         try:
                             os.remove(temp_script_path)
                         except:
@@ -517,8 +536,9 @@ if __name__ == "__main__":
                             
                         if attempt < max_retries - 1:
                             await _instant_log("AI Self-Correction", "Requesting AI to fix the code based on the timeout error with full context.")
-                            fixed_code = fix_generated_code(current_code, err_msg, context_msg=request.note or "")
+                            fixed_code, fix_method = fix_generated_code(current_code, err_msg, context_msg=request.note or "")
                             if fixed_code:
+                                await _instant_log("AI Self-Correction Applied", "Generated fix for the timeout.", is_ai_code_request=True, fixed_code=fixed_code, fix_method=fix_method)
                                 current_code = fixed_code
                             else:
                                 execution_failed_fatally = True
@@ -541,14 +561,29 @@ if __name__ == "__main__":
             if system_notes:
                 agent_justification += "\n\nSystem Notes:\n- " + "\n- ".join(system_notes)
 
+    new_ai_logs = [
+        step.model_dump(mode="json") 
+        for step in state.agent_step_log[original_step_count:] 
+        if step.is_ai_code_request
+    ]
+
     # Update the last decision log entry with the user's choice
     if state.decisions_log:
         last_entry = state.decisions_log[-1]
-        if last_entry.user_action == UserAction.PENDING:
+        if last_entry.user_action in (UserAction.PENDING, UserAction.COUNTER_PROPOSE):
             last_entry.user_action = action
             last_entry.user_note = request.note
             last_entry.agent_justification = agent_justification
+            
+            if last_entry.ai_execution_logs:
+                last_entry.ai_execution_logs.extend(new_ai_logs)
+            else:
+                last_entry.ai_execution_logs = new_ai_logs
+                
             last_entry.decided_at = datetime.utcnow()
+            
+            if state.pending_approval:
+                state.pending_approval.ai_execution_logs = last_entry.ai_execution_logs
 
     if not execution_failed_fatally:
         if action == UserAction.APPROVE:
@@ -561,9 +596,6 @@ if __name__ == "__main__":
             state.is_paused = False  # Unblock but mark rejected
             if pending_card:
                 state.mark_stage(pending_card.stage, StageStatus.REJECTED)
-                # If they rejected model_selection, rewind to feature engineering
-                if pending_card.stage == "model_selection":
-                    state.mark_stage("feature_engineering", StageStatus.PENDING)
             state.pending_approval = None
 
     await save_state(state)
@@ -579,13 +611,14 @@ if __name__ == "__main__":
         "run_id": run_id,
         "action_recorded": action_str,
         "agent_justification": agent_justification,
+        "ai_execution_logs": new_ai_logs,
         "pipeline_resumed": not state.is_paused,
     }
 
 
 from typing import Tuple
 
-def _get_agent_justification(state: PipelineState, user_note: str) -> Tuple[str, str]:
+def _get_agent_justification(state: PipelineState, user_note: str) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
     """Ask the Orchestrator agent for a structured pros/cons and potential code on the counter-proposal."""
     try:
         from backend.agents.orchestrator import handle_counter_propose
@@ -605,9 +638,11 @@ def _get_agent_justification(state: PipelineState, user_note: str) -> Tuple[str,
         )
         
         code_str = result.get('generated_code', None)
-        return justification_str, code_str
+        ai_summary = result.get('ai_summary', None)
+        ai_technique = result.get('ai_technique', None)
+        return justification_str, code_str, ai_summary, ai_technique
     except Exception as e:
-        return f"Agent justification could not be generated: {e}", None
+        return f"Agent justification could not be generated: {e}", None, None, None
 
 
 # ---------------------------------------------------------------------------

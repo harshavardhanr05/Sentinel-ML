@@ -299,12 +299,18 @@ def node_model_selection(state: PipelineState) -> PipelineState:
     from backend.agents.model_selection import run_model_selection
     from backend.agents.cost_awareness import run_cost_awareness
 
+    # Reset SMOTE flag on every (re-)run of this node.
+    # SMOTE is only re-applied if the user explicitly requests it again via chat/decision card.
+    state.smote_applied = False
+    state.smote_class_distributions = {}
+
     state.mark_stage("model_selection", StageStatus.RUNNING)
     save_state_sync(state)
 
     state = run_cost_awareness(state)   # Estimate costs first
     state = run_model_selection(state)  # Then train + tune
     state.mark_stage("model_selection", StageStatus.COMPLETE)
+
 
     # Build leaderboard card
     best = next((m for m in state.model_leaderboard if m.is_selected), None)
@@ -537,7 +543,7 @@ def build_pipeline_graph() -> StateGraph:
     def route_after_model_selection(state: PipelineState) -> str:
         status = getattr(state.stage_statuses, "model_selection", None)
         if status == StageStatus.REJECTED:
-            return "feature_engineering"
+            return "model_selection"
         return "governance"
 
     # ── Edges ─────────────────────────────────────────────────
@@ -567,7 +573,7 @@ def build_pipeline_graph() -> StateGraph:
         "model_selection",
         route_after_model_selection,
         {
-            "feature_engineering": "feature_engineering",
+            "model_selection": "model_selection",
             "governance": "governance",
         },
     )

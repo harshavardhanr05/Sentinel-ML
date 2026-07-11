@@ -227,6 +227,8 @@ export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) 
       : chart.type === 'histogram' || chart.type === 'area' ? BarChartIcon
       : chart.type === 'radar' ? Activity
       : chart.type === 'line' ? TrendingUp : BarChart2
+      
+    const safeId = chart.id ? chart.id.replace(/[^a-zA-Z0-9_-]/g, '') : 'default'
 
     return (
       <div key={chart.id} className="bg-surface-800/60 backdrop-blur-md rounded-2xl border border-surface-600/40 shadow-xl hover:shadow-2xl hover:border-brand-500/30 transition-all duration-300 flex flex-col" style={{ height: 380 }}>
@@ -275,7 +277,7 @@ export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) 
             ) : chart.type === 'area' ? (
               <AreaChart data={data} margin={{ top: 0, right: 10, left: 0, bottom: 20 }}>
                 <defs>
-                  <linearGradient id={`grad-${chart.id}`} x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient id={`grad-${safeId}`} x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#10b981" stopOpacity={0.4}/>
                     <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
                   </linearGradient>
@@ -284,12 +286,12 @@ export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) 
                 <XAxis dataKey="binStart" tickFormatter={(v: number) => v.toFixed(1)} stroke="#94a3b8" fontSize={10} tick={{ fill: '#94a3b8' }} tickLine={false} angle={-30} textAnchor="end" />
                 <YAxis stroke="#94a3b8" fontSize={10} tick={{ fill: '#94a3b8' }} tickLine={false} axisLine={false} />
                 <Tooltip content={<HistogramTooltip />} />
-                <Area type="monotone" dataKey="count" stroke="#10b981" strokeWidth={2} fillOpacity={1} fill={`url(#grad-${chart.id})`} />
+                <Area type="monotone" dataKey="count" stroke="#10b981" strokeWidth={2} fillOpacity={1} fill={`url(#grad-${safeId})`} />
               </AreaChart>
             ) : chart.type === 'histogram' ? (
               <BarChart data={data} margin={{ top: 0, right: 10, left: 0, bottom: 20 }}>
                 <defs>
-                  <linearGradient id={`grad-hist-${chart.id}`} x1="0" y1="0" x2="0" y2="1">
+                  <linearGradient id={`grad-hist-${safeId}`} x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#6366f1" stopOpacity={0.8}/>
                     <stop offset="100%" stopColor="#8b5cf6" stopOpacity={0.4}/>
                   </linearGradient>
@@ -298,7 +300,7 @@ export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) 
                 <XAxis dataKey="binStart" tickFormatter={(v: number) => v.toFixed(1)} stroke="#94a3b8" fontSize={10} tick={{ fill: '#94a3b8' }} tickLine={false} angle={-30} textAnchor="end" />
                 <YAxis stroke="#94a3b8" fontSize={10} tick={{ fill: '#94a3b8' }} tickLine={false} axisLine={false} />
                 <Tooltip content={<HistogramTooltip />} cursor={{ fill: '#334155', opacity: 0.4 }} />
-                <Bar dataKey="count" fill={`url(#grad-hist-${chart.id})`} radius={[3, 3, 0, 0]} />
+                <Bar dataKey="count" fill={`url(#grad-hist-${safeId})`} radius={[3, 3, 0, 0]} />
               </BarChart>
             ) : chart.type === 'line' ? (
               <LineChart data={data}>

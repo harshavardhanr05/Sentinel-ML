@@ -104,18 +104,15 @@ Only return JSON. Do not include markdown blocks.
 """
 
 _GOVERNANCE_CHART_PROMPT = """
-You are an expert AI Governance and AI Fairness Auditor. Your task is to generate 2-3 visual auditing charts (e.g. demographic parity charts, confusion matrices, or performance comparison charts) based on the audit results.
+You are an expert AI Governance and AI Fairness Auditor. Your task is to generate 2-3 visual auditing charts (e.g. demographic parity charts, or performance comparison charts) based on the audit results.
 
-For each visualization, you can choose to output EITHER:
-- **Option A (Interactive React UI Chart)**: For simple comparisons, fairness gaps, or degradation metrics. These are fully interactive and hoverable.
-- **Option B (Static Seaborn/Matplotlib Plot)**: For complex grids, demographic confusion matrices, or customized visual plots.
+You MUST output **ONLY Interactive React UI Charts**. No static Seaborn/Matplotlib images are allowed. You must return structured JSON data that will be rendered natively in the UI.
 
 Write a complete, standalone Python script that processes the audit data and prints a single valid JSON array to `sys.stdout` containing all the charts.
 
 The JSON array must look like this:
 [
   {{
-    // Option A: Interactive React UI chart
     "id": "gov-chart-1",
     "title": "Interactive Demographic Parity Ratio",
     "insight": "Demographic parity ratio compared across groups.",
@@ -125,22 +122,15 @@ The JSON array must look like this:
       {{ "name": "Unprivileged Group", "count": 0.78 }}
     ]
   }},
-  {{
-    // Option B: Static Seaborn/Matplotlib plot
-    "id": "gov-chart-2",
-    "title": "Demographic Confusion Matrices",
-    "insight": "Side-by-side demographic confusion matrix heatmap.",
-    "imageBase64": "iVBORw0KGgoAAAANSUhEUgAA..." // Base64 encoded PNG
-  }},
   ...
 ]
 
 CRITICAL RULES:
-- **PREREQUISITE (PREFER INTERACTIVE REACT CHARTS)**: You MUST default to **Option A (Interactive React UI Chart)** for any standard plots (such as demographic performance comparisons, simple fairness gap bar charts, or stability metrics).
-- **Option B (Static Seaborn Image)** should ONLY be used when the visualization is physically impossible to construct in Recharts (e.g., custom double-heatmap grids). If a chart can be represented as an Option A chart, you MUST output it as Option A.
+- **PREREQUISITE (ONLY INTERACTIVE REACT CHARTS)**: You MUST calculate statistical aggregates and output data arrays. Do NOT generate matplotlib or seaborn plots. Do NOT output base64 strings.
 - Do NOT output any markdown blocks like ```python. ONLY output the raw Python code.
 - Only print the JSON to stdout. Do not print anything else.
-- Make sure to `import sys`, `import json`, `import base64`, `import io`, `import pandas as pd`, `import seaborn as sns`, `import matplotlib.pyplot as plt`, `import numpy as np`.
+- Make sure to `import sys`, `import json`, `import pandas as pd`, `import numpy as np`.
+- Do NOT use `pd.np` (pandas has no attribute `np`). Use `numpy` directly (e.g. `np.random`).
 - You MUST run `sys.stdout.reconfigure(encoding='utf-8')` right after imports to prevent Windows console encoding errors. Do NOT use `ensure_ascii=False` when calling `json.dump` or `json.dumps`.
 
 Audit Data (use this directly in your Python code as Python dictionaries):

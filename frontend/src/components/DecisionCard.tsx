@@ -4,33 +4,47 @@
  * Approve / Reject / Counter-Propose buttons wired to the decision API.
  */
 
-import React, { useState } from 'react'
-import { CheckCircle, XCircle, MessageSquare, ChevronDown, ChevronUp, Zap } from 'lucide-react'
+import React, { useState, useEffect } from 'react'
+import { CheckCircle, XCircle, MessageSquare, ChevronDown, ChevronUp, Zap, Bot, Activity } from 'lucide-react'
 import { submitDecision } from '../api/client'
 import type { DecisionCard as IDecisionCard } from '../api/client'
+import { ActivityStep, type AgentStep } from './AuditTrailViewer'
 import clsx from 'clsx'
 
 interface Props {
   runId: string
   card: IDecisionCard
+  realtimeLogs?: any[]
   onDecisionMade: (justification?: string) => void
 }
 
-export default function DecisionCard({ runId, card, onDecisionMade }: Props) {
+export default function DecisionCard({ runId, card, realtimeLogs, onDecisionMade }: Props) {
   const [loading, setLoading] = useState<string | null>(null)
   const [showAlternatives, setShowAlternatives] = useState(false)
   const [showCounterForm, setShowCounterForm] = useState(false)
   const [counterNote, setCounterNote] = useState('')
   const [agentResponse, setAgentResponse] = useState<string | null>(null)
+  const [aiExecutionLogs, setAiExecutionLogs] = useState<any[] | null>(card.ai_execution_logs || null)
+  const [logStartIndex, setLogStartIndex] = useState<number>(-1)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (card.ai_execution_logs) {
+      setAiExecutionLogs(card.ai_execution_logs)
+    }
+  }, [card.ai_execution_logs])
 
   const handleDecision = async (action: 'approve' | 'reject' | 'counter_propose', note?: string) => {
     setLoading(action)
     setError(null)
+    if (action === 'counter_propose' && realtimeLogs) {
+      setLogStartIndex(realtimeLogs.length)
+      setAiExecutionLogs(null)
+    }
     try {
       const result = await submitDecision(runId, action, note)
-      if (result.agent_justification) {
-        setAgentResponse(result.agent_justification)
+      if (result.ai_execution_logs) {
+        setAiExecutionLogs(result.ai_execution_logs)
       }
       onDecisionMade(result.agent_justification)
     } catch (e: any) {
@@ -39,6 +53,10 @@ export default function DecisionCard({ runId, card, onDecisionMade }: Props) {
       setLoading(null)
     }
   }
+
+  const displayLogs = loading === 'counter_propose' && realtimeLogs && logStartIndex >= 0
+    ? realtimeLogs.slice(logStartIndex).filter(l => l.is_ai_code_request)
+    : aiExecutionLogs;
 
   const stageName = card.stage.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
@@ -169,7 +187,25 @@ export default function DecisionCard({ runId, card, onDecisionMade }: Props) {
         </div>
       )}
 
-      {/* Agent justification response removed as it's shown in Audit Trail */}
+      {/* AI Execution Logs (shown after counter-propose if any ai logs are present) */}
+      {displayLogs && displayLogs.length > 0 && (
+        <div className="mb-4 bg-brand-900/20 border border-brand-800/30 rounded-xl p-4">
+          <div className="space-y-3">
+            <span className="text-xs font-bold uppercase tracking-wider text-brand-300 flex items-center gap-2 mb-2">
+              <Activity size={14} /> AI Code Execution History
+            </span>
+            <div className="pl-2">
+              {displayLogs.map((log, i) => (
+                <ActivityStep 
+                  key={log.entry_id || i} 
+                  step={log as unknown as AgentStep} 
+                  isLast={i === displayLogs.length - 1} 
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Counter-propose form */}
       {showCounterForm && (

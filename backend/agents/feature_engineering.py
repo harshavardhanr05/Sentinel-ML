@@ -71,25 +71,20 @@ User Description: "{objective_text}"
 
 Your goal is to build a robust, generalizable model by filtering out features that lead to overfitting, noise, or data leakage, while preserving high-value causal predictors.
 
-### Reasoning Process Requirement:
-Before selecting features, you must perform an in-depth domain analysis. For each column, you must explicitly trace the logical causal pathway to the target, and evaluate risks (data leakage, proxy bias, or high-cardinality noise).
+### Deep Reasoning Process Requirement:
+This is one of the most crucial parts of the ML system. You must perform an in-depth, adaptive reasoning process tailored to the specific dataset domain.
+Before selecting features, explicitly trace the logical causal pathway to the target. For every single column, evaluate if introducing or removing it makes actual sense in real-world deployment.
 
-#### Domain-Aware & Scenario-Aware Feature Selection Rules:
+#### Adaptive Scenario-Aware Feature Selection Rules:
 1. **Clinical/Medical Context (e.g. disease prediction, health risks):**
-   - Demographic features like `age`, `sex`/`gender`, and physiological metrics (e.g. `blood_pressure`, `cholesterol`) are biologically critical drivers of clinical outcomes. You MUST KEEP them. Do not drop them for bias reasons because biological differences are medically relevant.
-2. **Financial Lending / Employment / Housing Context (e.g. loan defaults, hiring, tenant scoring):**
-   - Demographic features like `gender`, `race`, `religion`, `age` MUST NOT be used for prediction. They represent protected attributes under fair lending and anti-discrimination laws. You MUST DROP them to prevent model bias and legal non-compliance.
-3. **Data Leakage & Target Surrogates (The "Future Information" test):**
-   - Ask yourself: *Is this feature known at the exact moment the model makes its prediction?*
-   - For example, if predicting if a user defaults on a loan, a feature like `recovery_rate` or `last_payment_date` is only populated *after* the loan starts defaulting. This is target leakage! You MUST DROP any feature that is created post-event or directly reflects the target outcome.
-4. **Noisy / Non-Predictive Identifiers:**
-   - Drop columns that are simple database IDs, UUIDs, row numbers, URL links, customer names, or unstructured high-cardinality descriptions unless they can be parsed for real signal.
-
-#### Data Leakage Safeguard:
-Ensure no features are "target surrogates" (e.g., columns populated *after* the target event occurs, or columns that directly encode the outcome). If a column is a target surrogate, it MUST be dropped.
-
-#### Noise/Overfitting Safeguard:
-Drop identifiers, high-cardinality descriptive strings, dates with high uniqueness, and noisy metadata.
+   - Demographic features like `age`, `sex`/`gender`, and physiological metrics (e.g. `blood_pressure`) are biologically critical drivers. You MUST KEEP them. Do not drop them for bias reasons.
+2. **Financial/Employment/Housing (e.g. loan defaults, hiring, tenant scoring):**
+   - Demographics like `gender`, `race`, `religion`, `age` MUST NOT be used. They represent protected attributes under fair lending and anti-discrimination laws. You MUST DROP them.
+3. **Strict Data Leakage Prevention (The "Future Information" test):**
+   - Ask yourself: *Is this feature known at the exact moment the model makes its prediction in production?*
+   - If a feature is populated *after* the target event occurs (e.g. `recovery_rate` when predicting default, or `treatment_outcome` when predicting disease), it is target leakage. You MUST DROP it.
+4. **Noise & High-Cardinality Safeguards:**
+   - Drop IDs, UUIDs, row numbers, URL links, names, and noisy metadata.
 
 Schema (column name → data type, number of unique values, sample values):
 {schema}
@@ -97,18 +92,17 @@ Schema (column name → data type, number of unique values, sample values):
 Respond ONLY with a valid JSON object in EXACTLY this structure (no markdown wrappers):
 {{
   "domain_analysis": {{
-    "key_predictive_drivers": "Causal factors and logical predictive relationships relevant to predicting '{target_column}' in the '{domain}' domain.",
-    "dangerous_features_to_watch_for": "Specific indicators of data leakage (target surrogates), proxy bias, or high-cardinality noise in this dataset schema.",
-    "general_strategy": "Overall feature selection philosophy and guidelines chosen for this specific scenario."
+    "key_predictive_drivers": "Causal factors and logical predictive relationships for '{target_column}'.",
+    "dangerous_features_to_watch_for": "Specific indicators of data leakage, proxy bias, or noise.",
+    "general_strategy": "Overall feature selection philosophy chosen for this specific scenario."
   }},
   "feature_reasoning": [
     {{
       "column_name": "string",
-      "column_description": "What this column represents in 1-2 sentences.",
-      "logical_connection": "The logical/causal pathway showing how changes in this column influence or correlate with '{target_column}' (e.g. 'higher revolving balance directly increases financial leverage and probability of default').",
-      "risk_evaluation": "A critical risk analysis evaluating if this feature poses risks of data leakage (populated post-target event), overfitting (high cardinality/noise), or proxy-bias.",
+      "column_description": "What this column represents.",
+      "chain_of_thought_reasoning": "Step-by-step thinking: 1. Is this known at prediction time? 2. Is it a causal driver or proxy? 3. Does including it make real-world sense?",
       "action": "keep" | "drop",
-      "reason": "Comprehensive, technical justification for keeping or dropping.",
+      "reason": "Final technical justification for keeping or dropping.",
       "imputation_strategy": "mean" | "median" | "mode" | "zero" | "unknown" (required if action is keep, otherwise null),
       "encoding_strategy": "one_hot" | "target_encoding" | "ordinal" | "none" (required if action is keep, otherwise null)
     }}
@@ -147,6 +141,18 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
     leakage_cols = {f["column"] for f in (state.data_health_report.leakage_flags if state.data_health_report else [])}
 
     if not target_col or target_col not in df.columns:
+        err_msg = f"Target column '{target_col}' not found in the dataset. Please provide a valid target column."
+        log_step_and_broadcast_sync(state, "feature_engineering", "Feature Engineering Aborted", err_msg)
+        state.feature_log = FeatureLog(
+            accepted=[], 
+            rejected=[FeatureLogEntry(
+                feature=target_col or "Unknown",
+                transformation="Fatal Error",
+                status="rejected",
+                reason=err_msg
+            )],
+            final_feature_set=[]
+        )
         return state
 
     accepted: List[FeatureLogEntry] = []
@@ -188,8 +194,7 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
             col_desc = item.get("column_description", "").strip()
             imputation = item.get("imputation_strategy")
             encoding = item.get("encoding_strategy")
-            logical_connection = item.get("logical_connection", "").strip()
-            risk_evaluation = item.get("risk_evaluation", "").strip()
+            cot = item.get("chain_of_thought_reasoning", "").strip()
             
             if not reason:
                 reason = "Retained based on domain and objective relevance."
@@ -200,8 +205,8 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
                     full_reason = f"AI Semantic Filter: {reason}"
                     if col_desc:
                         full_reason = f"{col_desc} — {reason}"
-                    if risk_evaluation:
-                        full_reason = f"{full_reason} [Risk Analysis: {risk_evaluation}]"
+                    if cot:
+                        full_reason = f"{full_reason} [CoT: {cot}]"
                     rejected.append(FeatureLogEntry(
                         feature=c,
                         transformation="drop",
@@ -219,12 +224,11 @@ def run_feature_engineering(state: PipelineState) -> PipelineState:
                         "encoding_strategy": encoding,
                         "semantic_reason": reason,
                         "column_description": col_desc,
-                        "logical_connection": logical_connection,
-                        "risk_evaluation": risk_evaluation,
+                        "chain_of_thought_reasoning": cot,
                     }
                     log_step_and_broadcast_sync(
                         state, "feature_engineering", f"AI retained '{c}'",
-                        f"{col_desc} | Connection: {logical_connection} | Risk: {risk_evaluation} | Imputation: {imputation} | Encoding: {encoding}"
+                        f"{col_desc} | CoT: {cot} | Imputation: {imputation} | Encoding: {encoding}"
                     )
 
     except Exception as e:

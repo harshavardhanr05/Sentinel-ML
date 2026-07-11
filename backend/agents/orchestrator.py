@@ -19,7 +19,7 @@ metadata, never sees raw row data (NFR-6 privacy constraint).
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from backend.llm.client import get_llm_json
 from backend.state.schema import ObjectiveState, PipelineState, TaskType
@@ -94,6 +94,8 @@ Respond with a structured pros/cons comparison as JSON:
   "flaws_and_drawbacks_of_user_suggestion": ["Short punchy flaw 1", "Short punchy flaw 2"],
   "benefits_of_user_suggestion": ["Short punchy benefit 1", "Short punchy benefit 2"],
   "recommendation_reasoning": "one sentence summarizing the trade-off",
+  "ai_summary": "One line summary of what the generated code does (if applicable)",
+  "ai_technique": "General technique/process name (e.g. 'Polynomial Feature Engineering', 'Data Cleaning')",
   "generated_code": "def apply_transformation(df):\\n    # your code\\n    return df"
 }}
 """
@@ -114,8 +116,9 @@ Error Message / Timeout Encountered:
 {error_message}
 
 CRITICAL INSTRUCTIONS:
-- Return a JSON object with a single key "generated_code".
-- The value must be the fully corrected Python code defining `def apply_transformation(df):` that takes a Pandas DataFrame and returns it.
+- Return a JSON object with "generated_code" and "fix_method".
+- "fix_method" should be a short sentence explaining how you fixed the error.
+- "generated_code" must be the fully corrected Python code defining `def apply_transformation(df):` that takes a Pandas DataFrame and returns it.
 - Fix the issue described in the error message.
 - Include all necessary imports inside the function.
 - Assume `import pandas as pd` and `import numpy as np` are globally available.
@@ -123,6 +126,7 @@ CRITICAL INSTRUCTIONS:
 
 Respond exactly as JSON:
 {{
+  "fix_method": "Short explanation of how the code was fixed",
   "generated_code": "def apply_transformation(df):\\n    # fixed code\\n    return df"
 }}
 """
@@ -232,7 +236,7 @@ def handle_counter_propose(
         }
 
 
-def fix_generated_code(original_code: str, error_msg: str, context_msg: str = "") -> Optional[str]:
+def fix_generated_code(original_code: str, error_msg: str, context_msg: str = "") -> Tuple[Optional[str], Optional[str]]:
     """
     Called when a dynamically generated AI script fails. Asks the LLM to fix it based on the error.
     """
@@ -247,10 +251,10 @@ def fix_generated_code(original_code: str, error_msg: str, context_msg: str = ""
     try:
         from backend.llm.client import get_llm_json
         result = get_llm_json(prompt)
-        return result.get("generated_code")
+        return result.get("generated_code"), result.get("fix_method", "Fixed based on error trace.")
     except Exception as e:
         print(f"Error in fix_generated_code: {e}")
-        return None
+        return None, None
 
 
 # ---------------------------------------------------------------------------

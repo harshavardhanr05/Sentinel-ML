@@ -14,12 +14,19 @@ import {
 import type { DecisionLogEntry } from '../api/client'
 import clsx from 'clsx'
 
-interface AgentStep {
+export interface AgentStep {
   entry_id: string
   stage: string
   step_name: string
   details: string
   timestamp: string
+  is_ai_code_request?: boolean
+  generated_code?: string
+  code_error?: string
+  fixed_code?: string
+  fix_method?: string
+  ai_summary?: string
+  ai_technique?: string
 }
 
 interface Props {
@@ -63,7 +70,7 @@ const ACTION_COLORS: Record<string, string> = {
   pending:         'from-amber-900/20 to-amber-900/5 border-amber-800/40',
 }
 
-const STAGE_COLORS: Record<string, string> = {
+export const STAGE_COLORS: Record<string, string> = {
   objective_intake:     '#6366f1',
   data_profiling:       '#0ea5e9',
   feature_engineering:  '#f59e0b',
@@ -79,7 +86,7 @@ function stageDot(stage: string) {
 
 // ── Step icon by step_name keywords ─────────────────────────────────
 
-function stepIcon(stepName: string, stage: string) {
+export function stepIcon(stepName: string, stage: string) {
   const lower = stepName.toLowerCase()
   if (lower.includes('fail') || lower.includes('error')) return <XCircle size={13} className="text-red-400" />
   if (lower.includes('complete') || lower.includes('selected') || lower.includes('trained')) return <CheckCircle size={13} className="text-emerald-400" />
@@ -196,7 +203,7 @@ function CheckpointCard({ entry }: { entry: DecisionLogEntry }) {
 
 // ── Agent Activity Step ──────────────────────────────────────────────
 
-function ActivityStep({ step, isLast }: { step: AgentStep; isLast: boolean }) {
+export function ActivityStep({ step, isLast }: { step: AgentStep; isLast: boolean }) {
   const [expanded, setExpanded] = useState(false)
   return (
     <div className="flex gap-3">
@@ -226,6 +233,38 @@ function ActivityStep({ step, isLast }: { step: AgentStep; isLast: boolean }) {
         {expanded && (
           <div className="mt-2 bg-surface-800/60 rounded-lg p-3 border border-surface-600/30 text-sm text-slate-400 leading-relaxed">
             {step.details}
+            
+            {step.is_ai_code_request && (
+              <div className="mt-3 space-y-2 border-t border-surface-600/30 pt-2">
+                {step.ai_summary && (
+                  <div className="text-xs text-brand-300">
+                    <strong className="text-brand-400 font-semibold mr-2">{step.ai_technique || "AI Task"}:</strong>
+                    {step.ai_summary}
+                  </div>
+                )}
+                {step.generated_code && (
+                  <details className="bg-surface-900 rounded p-2 text-xs">
+                    <summary className="cursor-pointer text-slate-400 hover:text-slate-200 uppercase text-[10px] tracking-wider outline-none">View Generated Code</summary>
+                    <pre className="mt-2 overflow-x-auto font-mono text-emerald-300 text-[10px]">{step.generated_code}</pre>
+                  </details>
+                )}
+                {step.code_error && (
+                  <div className="bg-red-900/20 border border-red-800/30 rounded p-2 text-xs text-red-300 whitespace-pre-wrap">
+                    <strong className="text-red-400 uppercase text-[10px] block mb-1">Execution Error</strong>
+                    {step.code_error}
+                  </div>
+                )}
+                {step.fixed_code && (
+                  <details className="bg-brand-900/20 border border-brand-800/30 rounded p-2 text-xs">
+                    <summary className="cursor-pointer text-slate-400 hover:text-slate-200 uppercase text-[10px] tracking-wider outline-none">
+                      <strong className="text-brand-400 mr-2">Self-Correction Fix:</strong>
+                      {step.fix_method || "View Fixed Code"}
+                    </summary>
+                    <pre className="mt-2 overflow-x-auto font-mono text-brand-300 text-[10px]">{step.fixed_code}</pre>
+                  </details>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
