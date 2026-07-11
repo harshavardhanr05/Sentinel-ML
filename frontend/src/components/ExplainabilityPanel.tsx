@@ -50,7 +50,17 @@ export default function ExplainabilityPanel({ globalShap, topFeatures, localExam
           <div className="flex items-center gap-2 mb-2 font-semibold text-brand-300">
             <Bot size={16} /> AI Explanation
           </div>
-          {llmNarrative}
+          <p
+            dangerouslySetInnerHTML={{
+              __html: llmNarrative
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/\*\*(.+?)\*\*/g, '<strong class="text-white font-semibold">$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+            }}
+          />
+
         </div>
       )}
 
