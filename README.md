@@ -1,5 +1,12 @@
 # 🛡️ Sentinel-ML — AI-Governed ML Automation Platform
 
+<p align="left">
+  <img src="https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/LangGraph-Multi--Agent-FF4F00?logo=langchain&logoColor=white" alt="LangGraph" />
+  <img src="https://img.shields.io/badge/FastAPI-0.111+-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/React-18+-61DAFB?logo=react&logoColor=black" alt="React" />
+  <img src="https://img.shields.io/badge/Scikit--Learn-1.4+-F7931E?logo=scikit-learn&logoColor=white" alt="Scikit-Learn" />
+</p>
 > **A production-grade, human-in-the-loop machine learning pipeline orchestration system powered by LangGraph, Gemini AI, and modern DevOps tooling.**
 
 Sentinel-ML automates the entire ML lifecycle — from raw data upload to deployment decision — while enforcing fairness, compliance, and full audit traceability at every step. Every agent action pauses for your approval before proceeding, giving you complete control over automated ML decisions.
