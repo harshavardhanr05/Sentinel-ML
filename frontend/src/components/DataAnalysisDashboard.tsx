@@ -139,8 +139,13 @@ export default function DataAnalysisDashboard({ metrics, targetColumn }: Props) 
 
     // 2. Interleave defaults for storytelling (never show same type consecutive, mix categorical & numeric)
     const defaults: any[] = []
-    if (Object.keys(target_distribution).length > 0) {
-      defaults.push({ id: 'target-dist', title: `Target Distribution (${targetColumn})`, type: 'pie', dataKeyX: targetColumn, insight: 'Class balance of the target variable.' })
+    const targetDistKeys = Object.keys(target_distribution)
+    if (targetDistKeys.length > 0) {
+      if (targetDistKeys.length > 15 && numeric_histograms[targetColumn]) {
+        defaults.push({ id: 'target-dist', title: `Target Distribution (${targetColumn})`, type: 'area', dataKeyX: targetColumn, insight: 'Distribution of continuous target values.' })
+      } else {
+        defaults.push({ id: 'target-dist', title: `Target Distribution (${targetColumn})`, type: 'pie', dataKeyX: targetColumn, insight: 'Class balance of the target variable.' })
+      }
     }
 
     const maxLength = Math.max(catCharts.length, numCharts.length)

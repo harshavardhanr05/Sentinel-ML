@@ -67,10 +67,11 @@ The JSON array must look like this:
 ]
 
 CRITICAL RULES:
-- **PREREQUISITE (ONLY INTERACTIVE REACT CHARTS)**: You MUST calculate statistical aggregates using pandas and output data arrays. Do NOT generate matplotlib or seaborn plots. Do NOT output base64 strings.
+- **DO NOT wrap your main code in a giant `try-except` block.** Let errors crash the script naturally so the orchestrator can catch the stack trace! Never silence errors.
 - Do NOT output any markdown blocks like ```python. ONLY output the raw Python code.
-- Ensure the code handles potential missing values or infinite values gracefully. DO NOT use `sys.exit()` or exit early under any circumstances.
+- Ensure the code handles potential missing values or infinite values (e.g. using `.dropna()` or `.fillna(0)`).
 - Do NOT encode categorical variables into numbers (like LabelEncoder) before aggregating for charts. Keep original string labels (e.g., 'Male', 'Female', 'Yes') so they remain informative in the UI.
+- **NEVER use 'pie' or 'doughnut' charts for continuous/numerical variables (especially the target column in regression tasks).** For continuous variables, use 'area', 'histogram', or 'line' charts instead. Using a pie chart for a continuous variable results in hundreds of unreadable, meaningless slices.
 - **ABSOLUTELY CRITICAL**: You MUST explicitly call `print(json.dumps(charts))` at the very end of the script to output the data. If you do not print the final JSON array, the script will fail!
 - Only print the JSON to stdout. Do not print anything else (no intermediate prints).
 - Make sure to `import sys`, `import json`, `import pandas as pd`, `import numpy as np`.
@@ -235,7 +236,7 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
         numeric_cols = df.select_dtypes(include=[np.number]).columns
         analysis_metrics["numeric_histograms"] = {}
         for c in numeric_cols:
-            if c != target_col and df[c].notna().sum() > 5:
+            if df[c].notna().sum() > 5:
                 try:
                     counts, bin_edges = np.histogram(df[c].dropna(), bins=20)
                     analysis_metrics["numeric_histograms"][c] = {
@@ -300,19 +301,24 @@ def run_data_profiling(state: PipelineState) -> PipelineState:
                             import re
                             out_str = result.stdout.strip()
                             if not out_str:
-                                raise ValueError("Script executed successfully but produced no output. You MUST explicitly call print(json.dumps(charts)) at the end of your script.")
+                                # Failsafe: if the LLM forgot to print, forcefully append it and retry
+                                raise ValueError("Empty output. Force-appending print statement.")
                                 
-                            # Robust JSON extraction
-                            match = re.search(r'\[\s*\{.*\}\s*\]', out_str, re.DOTALL)
-                            if match:
-                                out_str = match.group(0)
+                            # Find the first '[' and last ']' to extract the JSON array
+                            start_idx = out_str.find('[')
+                            end_idx = out_str.rfind(']')
+                            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                                out_str = out_str[start_idx:end_idx+1]
                                 
                             ai_charts = json.loads(out_str)
                             log_step_and_broadcast_sync(state, "data_profiling", "AI Chart Generation", f"Successfully generated {len(ai_charts)} AI-driven visual EDA charts via Python script (Attempt {attempt+1}).")
                             break
                         except Exception as je:
                             if attempt < max_retries - 1:
-                                fixed_code, _ = fix_generated_code(current_code, f"Failed to parse JSON output: {je}. You MUST print a valid JSON array to stdout using print(json.dumps(charts)). Do not print anything else.")
+                                if ("Empty output" in str(je) or "produced no output" in str(je)) and "for var in ['charts'" not in current_code:
+                                    fixed_code = current_code + "\n\nimport json\nfor var in ['charts', 'ai_charts', 'dashboard_charts', 'data', 'json_data', 'result', 'output']:\n    if var in locals() and isinstance(locals()[var], list):\n        try:\n            print(json.dumps(locals()[var]))\n            break\n        except:\n            pass\n"
+                                else:
+                                    fixed_code, _ = fix_generated_code(current_code, f"Failed to parse JSON output: {je}. You MUST print a valid JSON array to stdout using print(json.dumps(charts)). Do not print anything else.")
                                 if not fixed_code: break
                                 current_code = fixed_code
                             else:

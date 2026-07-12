@@ -14,6 +14,15 @@ import { ShieldCheck, ShieldAlert, TrendingUp, Activity, ChevronDown, ChevronRig
 import type { ModelLeaderboardEntry, GovernanceAudit } from '../api/client'
 import clsx from 'clsx'
 
+function formatMarkdown(text: string) {
+  if (!text) return null
+  const html = text
+    .replace(/\*\*(.*?)\*\*/g, '<strong class="text-slate-100 font-semibold">$1</strong>')
+    .replace(/ \* /g, '<br/><br/><span class="text-brand-400 mr-2">•</span>')
+    .replace(/\n/g, '<br/>')
+  return <span dangerouslySetInnerHTML={{ __html: html }} />
+}
+
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#3b82f6', '#14b8a6', '#f43f5e']
 
 interface GovernanceLoopRecord {
@@ -199,7 +208,7 @@ export default function InsightDashboard({ leaderboard, governance, featureImpor
             <Info size={16} className="text-brand-400 mt-0.5 flex-shrink-0" />
             <div>
               <p className="text-xs font-semibold text-brand-400 uppercase tracking-wide">AI Governance Plan Justification</p>
-              <p className="text-sm text-slate-300 mt-1 leading-relaxed">{governance.compliance_reasoning}</p>
+              <p className="text-sm text-slate-300 mt-1 leading-relaxed">{formatMarkdown(governance.compliance_reasoning)}</p>
             </div>
           </div>
         )}
