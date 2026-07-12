@@ -7,7 +7,8 @@
   <img src="https://img.shields.io/badge/React-18+-61DAFB?logo=react&logoColor=black" alt="React" />
   <img src="https://img.shields.io/badge/Scikit--Learn-1.4+-F7931E?logo=scikit-learn&logoColor=white" alt="Scikit-Learn" />
 </p>
-> **A production-grade, human-in-the-loop machine learning pipeline orchestration system powered by LangGraph, Gemini AI, and modern DevOps tooling.**
+
+> **A production-grade, human-in-the-loop machine learning pipeline orchestration system powered by LangGraph, Agentic AI, and modern DevOps tooling.**
 
 Sentinel-ML automates the entire ML lifecycle — from raw data upload to deployment decision — while enforcing fairness, compliance, and full audit traceability at every step. Every agent action pauses for your approval before proceeding, giving you complete control over automated ML decisions.
 
@@ -41,7 +42,7 @@ Sentinel-ML automates the entire ML lifecycle — from raw data upload to deploy
 | **SHAP Explainability** | Global feature importance bar charts + local correct/misclassified example breakdowns |
 | **Governance Audit Trail** | Full immutable log of every agent action, decision checkpoint, and feature selection step |
 | **Compliance Profiles** | Pre-built YAML profiles for Finance, Healthcare, and Generic domains (GDPR, EU AI Act, HIPAA) |
-| **AI Code Assistant** | In-pipeline chat interface to request custom feature engineering or model code from Gemini |
+| **AI Code Assistant** | In-pipeline chat interface to request custom feature engineering or model code from the configured LLM |
 | **MLflow Integration** | Experiment tracking with run IDs, metrics, and artifact logging for every trained model |
 | **Rich Data Analytics Dashboard** | Auto-generated EDA charts — histograms, bar charts, area charts, radar, correlation heatmaps, scatter plots — tailored by task type |
 | **Real-time Pipeline DAG** | Live visual graph showing current node, completed stages, and agent status |
@@ -57,7 +58,7 @@ Sentinel-ML automates the entire ML lifecycle — from raw data upload to deploy
 | Layer | Technology | Version |
 |---|---|---|
 | **Agent Orchestration** | LangGraph | >= 0.2.0 |
-| **LLM Integration** | Google Gemini via langchain-google-genai | >= 2.0.0 |
+| **LLM Integration** | Model-Agnostic via LangChain (Gemini, Groq, etc.) | >= 0.1.0 |
 | **LLM Framework** | LangChain Core | >= 0.3.0 |
 | **Alt LLM** | OpenAI SDK | >= 1.0.0 |
 | **API Framework** | FastAPI | >= 0.111.0 |
@@ -351,7 +352,7 @@ The Reporting agent generates a deployment recommendation with a full model card
 | **InsightDashboard** | InsightDashboard.tsx | Model leaderboard, governance metrics, cost/performance |
 | **ExplainabilityPanel** | ExplainabilityPanel.tsx | SHAP global importance + local example breakdowns |
 | **AuditTrailViewer** | AuditTrailViewer.tsx | Immutable audit log with Decision Checkpoints, Feature Selection, Agent Activity |
-| **ChatPanel** | ChatPanel.tsx | AI code assistant — live Gemini chat with code generation |
+| **ChatPanel** | ChatPanel.tsx | AI code assistant — live LLM chat with code generation |
 
 ---
 
@@ -439,7 +440,7 @@ Sentinel-ML/
 │   │       ├── healthcare.yaml
 │   │       └── generic.yaml
 │   ├── graph/                     # LangGraph graph definition
-│   ├── llm/                       # Gemini/OpenAI client wrappers
+│   ├── llm/                       # Model-agnostic LLM wrappers
 │   ├── state/
 │   │   └── schema.py              # PipelineState Pydantic model
 │   └── export/                    # PDF/HTML report generation
@@ -475,7 +476,7 @@ Sentinel-ML/
 
 - Python 3.10+
 - Node.js 18+ and npm
-- Google Gemini API key (or OpenAI API key)
+- API key for your chosen LLM provider
 
 ### 1. Clone and Set Up Backend
 
@@ -589,4 +590,5 @@ FRONTEND_URL=http://localhost:5173
 
 *Sentinel-ML — Bringing governance, fairness, and transparency to automated machine learning.*
 
-*Built with LangGraph · Gemini AI · FastAPI · React · SHAP · fairlearn*
+*Built with LangGraph · Agentic AI · FastAPI · React · SHAP · fairlearn*
+
